@@ -5,6 +5,7 @@ const DEFAULT_CONFIG = {
   audioCaptureEnabled: true,
   countdown: true,
   autoExport: false,
+  hideCursor: false,
 };
 
 const OPTION_KEYS = Object.keys(DEFAULT_CONFIG);

@@ -79,11 +79,79 @@ function bitrateFor(width, height, fps) {
   return Math.round(Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, width * height * fps * BITS_PER_PIXEL)));
 }
 
+// --- Cursor-free video (beta) ---
+// The background forwards DevTools screencast frames (JPEG, no system cursor)
+// over a port; each one is scaled to the capture size and pushed into a video
+// track. A still page sends no frames, so the track simply holds the last one.
+
+let screencast = null; // { port, track, write, canvas, ctx, seq, drawn }
+
+function createScreencastTrack(size) {
+  const canvas = new OffscreenCanvas(size.width, size.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, size.width, size.height);
+
+  // Insertable-stream track when available; otherwise a captured canvas
+  if (typeof MediaStreamTrackGenerator === 'function') {
+    const track = new MediaStreamTrackGenerator({ kind: 'video' });
+    const writer = track.writable.getWriter();
+    const write = () => {
+      const frame = new VideoFrame(canvas, { timestamp: Math.round(performance.now() * 1000) });
+      writer.write(frame).catch(() => {}).finally(() => frame.close());
+    };
+    return { canvas, ctx, track, write, stop: () => writer.close().catch(() => {}) };
+  }
+  const el = document.createElement('canvas');
+  el.width = size.width;
+  el.height = size.height;
+  const elCtx = el.getContext('2d');
+  const track = el.captureStream(CAPTURE_FPS).getVideoTracks()[0];
+  return { canvas, ctx, track, write: () => elCtx.drawImage(canvas, 0, 0), stop: () => {} };
+}
+
+function startScreencastInput(size) {
+  const out = createScreencastTrack(size);
+  const port = chrome.runtime.connect({ name: 'screencast' });
+  screencast = { ...out, port, seq: 0, drawn: 0, frames: 0 };
+  out.write(); // a first (black) frame so the recorder has a video track from the start
+
+  port.onMessage.addListener(async ({ data }) => {
+    const sc = screencast;
+    if (!sc) return;
+    const seq = ++sc.seq;
+    try {
+      const blob = await (await fetch(`data:image/jpeg;base64,${data}`)).blob();
+      const bmp = await createImageBitmap(blob);
+      // Decodes can finish out of order; never draw an older frame over a newer one
+      if (screencast !== sc || seq < sc.drawn) { bmp.close(); return; }
+      sc.drawn = seq;
+      sc.ctx.drawImage(bmp, 0, 0, sc.canvas.width, sc.canvas.height);
+      bmp.close();
+      sc.frames++;
+      sc.write();
+    } catch (e) {
+      console.warn('[MCR Offscreen] Bad screencast frame:', e.message);
+    }
+  });
+  return out.track;
+}
+
+function stopScreencastInput() {
+  if (!screencast) return;
+  console.log(`[MCR Offscreen] Screencast frames used: ${screencast.frames}`);
+  try { screencast.port.disconnect(); } catch (e) { /* already closed */ }
+  screencast.stop();
+  screencast = null;
+}
+
 async function startRecording(streamId, config, delayMs = 0, viewport = null) {
   try {
     const size = captureSize(viewport);
-    const constraints = {
-      video: {
+    const constraints = {};
+    // With hideCursor the pixels come from the screencast; tab capture is only for audio
+    if (!config.hideCursor) {
+      constraints.video = {
         mandatory: {
           chromeMediaSource: 'tab',
           chromeMediaSourceId: streamId,
@@ -91,13 +159,16 @@ async function startRecording(streamId, config, delayMs = 0, viewport = null) {
           maxHeight: size.height,
           maxFrameRate: CAPTURE_FPS,
         },
-      },
-    };
+      };
+    }
     if (config.audioCaptureEnabled) {
       constraints.audio = { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } };
     }
 
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    stream = constraints.video || constraints.audio
+      ? await navigator.mediaDevices.getUserMedia(constraints)
+      : new MediaStream();
+    if (config.hideCursor) stream.addTrack(startScreencastInput(size));
     currentMimeType = getSupportedMimeType();
     recordedChunks = [];
 
@@ -171,6 +242,7 @@ function stopRecording() {
 function cleanup() {
   clearInterval(requestDataInterval);
   requestDataInterval = null;
+  stopScreencastInput();
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   mediaRecorder = null;
   recordedChunks = [];

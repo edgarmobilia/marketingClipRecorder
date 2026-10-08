@@ -20,6 +20,7 @@ const DEFAULT_CONFIG = {
   audioCaptureEnabled: true,
   countdown: true,
   autoExport: false,
+  hideCursor: false,   // beta: video from the DevTools screencast, which has no system cursor
 };
 
 const COUNTDOWN_SECONDS = 3;
@@ -175,6 +176,74 @@ function sendToOffscreen(message) {
   return chrome.runtime.sendMessage({ ...message, target: 'offscreen' });
 }
 
+// --- Cursor-free video (beta) ---
+// Tab capture always burns the system cursor into the pixels. The DevTools
+// screencast (chrome.debugger → Page.startScreencast) sends the page's own
+// rendered frames, without the cursor. Frames go to the offscreen recorder
+// over a port; tab capture still provides the audio. Chrome shows its
+// "is debugging this browser" bar while this runs.
+
+let screencastTarget = null;   // { tabId } while attached
+let screencastPort = null;     // port from the offscreen document
+
+const SCREENCAST_OPTIONS = { format: 'jpeg', quality: 88, maxWidth: 3840, maxHeight: 2160, everyNthFrame: 1 };
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'screencast') return;
+  screencastPort = port;
+  port.onDisconnect.addListener(() => { if (screencastPort === port) screencastPort = null; });
+});
+
+async function attachScreencast(tabId) {
+  const target = { tabId };
+  try {
+    await chrome.debugger.attach(target, '1.3');
+  } catch (e) {
+    throw new Error(`Cannot hide the cursor: ${e.message} (close DevTools on that tab and try again).`);
+  }
+  screencastTarget = target;
+  // Page events let us restart the screencast after navigations
+  await chrome.debugger.sendCommand(target, 'Page.enable');
+}
+
+async function startScreencastFrames() {
+  if (!screencastTarget) return;
+  try {
+    await chrome.debugger.sendCommand(screencastTarget, 'Page.startScreencast', SCREENCAST_OPTIONS);
+  } catch (e) {
+    console.warn('[MCR] startScreencast failed:', e.message);
+  }
+}
+
+async function detachScreencast() {
+  const target = screencastTarget;
+  screencastTarget = null;
+  if (!target) return;
+  try { await chrome.debugger.sendCommand(target, 'Page.stopScreencast'); } catch (e) { /* tab gone */ }
+  try { await chrome.debugger.detach(target); } catch (e) { /* already detached */ }
+}
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (!screencastTarget || source.tabId !== screencastTarget.tabId) return;
+  if (method === 'Page.screencastFrame') {
+    // Chrome sends the next frame only after this one is acknowledged
+    chrome.debugger.sendCommand(screencastTarget, 'Page.screencastFrameAck', { sessionId: params.sessionId })
+      .catch(() => {});
+    screencastPort?.postMessage({ data: params.data, ts: params.metadata.timestamp });
+  } else if (method === 'Page.frameNavigated' && !params.frame.parentId) {
+    // A new document in the tab: make sure frames keep coming
+    startScreencastFrames();
+  }
+});
+
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (!screencastTarget || source.tabId !== screencastTarget.tabId) return;
+  // e.g. the user pressed "Cancel" on the debugging bar: the video freezes on
+  // the last frame, the recording itself (audio, events) carries on
+  console.warn('[MCR] Screencast detached:', reason);
+  screencastTarget = null;
+});
+
 // --- Start recording ---
 
 async function startRecording(config) {
@@ -188,6 +257,12 @@ async function startRecording(config) {
     await ensureOffscreenDocument();
     await ensureContentScript(tab.id);
     await resetEvents();
+
+    // Attach before measuring: the debugging bar it shows shrinks the page
+    if (config.hideCursor) {
+      await attachScreencast(tab.id);
+      await new Promise(r => setTimeout(r, 400));
+    }
 
     const streamId = await new Promise((resolve, reject) => {
       chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, (id) => {
@@ -209,6 +284,8 @@ async function startRecording(config) {
 
     const viewport = await getViewport(tab.id);
     await sendToOffscreen({ type: MSG.INIT_RECORDING, streamId, config, delayMs, viewport });
+    // The recorder has connected its port by now; frames start during the countdown
+    if (config.hideCursor) await startScreencastFrames();
 
     await sendToContentScript(tab.id, {
       type: MSG.RECORDING_STARTED,
@@ -221,6 +298,7 @@ async function startRecording(config) {
     console.error('[MCR] startRecording error:', err);
     clearCountdown();
     setBadge('');
+    await detachScreencast();
     await closeOffscreenDocument();
     await clearState();
     return { error: err.message };
@@ -240,11 +318,13 @@ async function stopRecording() {
       const resp = await sendToContentScript(tabId, { type: MSG.RECORDING_STOPPED });
       if (resp?.events?.length) appendEvents(resp.events);
     }
+    await detachScreencast();
     await sendToOffscreen({ type: MSG.STOP_RECORDING });
     await clearState();
     return { ok: true };
   } catch (err) {
     console.error('[MCR] stopRecording error:', err);
+    await detachScreencast();
     await clearState();
     return { error: err.message };
   }
@@ -330,7 +410,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.error('[MCR] Recording failed in offscreen:', message.error);
     clearCountdown();
     flashBadgeError();
-    closeOffscreenDocument().then(() => clearState());
+    detachScreencast().then(closeOffscreenDocument).then(() => clearState());
     return false;
   }
 
