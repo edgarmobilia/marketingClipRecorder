@@ -12,7 +12,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import * as z from 'zod';
 
 const PORT = Number(process.env.MCR_BRIDGE_PORT) || 47821;
@@ -24,75 +24,238 @@ const LISTEN_RETRY_MS = 5_000;
 const log = (...args) => console.error('[mcr-mcp]', ...args);
 
 // --- WebSocket bridge to the editor ---
+//
+// Every Claude Code session starts its own copy of this server, but the editor
+// only knows one port. The first server to bind it is the OWNER and talks to
+// the editor. Later servers become PROXIES: they connect to the owner on
+// /proxy and forward their calls, so every session can drive the same editor.
+// When the owner exits, its proxies race to bind the port and one takes over.
+// If the port is held by something that is not a clip-editor server, calls
+// fail with an error that says so (role "blocked").
 
-let editor = null;          // the currently connected editor socket
+const HANDSHAKE_MS = 2_000;
+const STARTUP_WAIT_MS = 3_000;
+
+const bridge = {
+  role: 'starting',          // 'owner' | 'proxy' | 'blocked' | 'starting'
+  blockedReason: null,
+  proxies: new Set(),        // owner: connected proxy sockets
+  upstream: null,            // proxy: socket to the owner
+  ownerPid: null,            // proxy: pid reported by the owner
+};
+
+let editor = null;          // owner: the currently connected editor socket
 let nextCallId = 1;
-const pending = new Map();  // id -> { resolve, reject, timer }
+const pending = new Map();  // id -> { resolve, reject, timer } (editor calls, or upstream calls when proxy)
 
 function isAllowedOrigin(origin) {
   if (!origin || !origin.startsWith('chrome-extension://')) return false;
   return !EXTENSION_ID || origin === `chrome-extension://${EXTENSION_ID}`;
 }
 
+const sendJson = (ws, obj) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); };
+
+function settle(id, msg) {
+  const call = pending.get(id);
+  if (!call) return;
+  pending.delete(id);
+  clearTimeout(call.timer);
+  if (msg.error) call.reject(new Error(msg.error.message || 'Editor error'));
+  else call.resolve(msg.result);
+}
+
+function rejectAll(reason) {
+  for (const [id, call] of pending) {
+    clearTimeout(call.timer);
+    call.reject(new Error(reason));
+    pending.delete(id);
+  }
+}
+
+function setRole(role, reason = null) {
+  if (bridge.role !== role) log(`bridge role: ${role}${reason ? ` (${reason})` : ''}`);
+  bridge.role = role;
+  bridge.blockedReason = reason;
+}
+
 function startBridge() {
   const wss = new WebSocketServer({
     host: '127.0.0.1',
     port: PORT,
-    path: '/editor',
-    // Web pages can also open localhost sockets; only accept the extension
-    verifyClient: ({ origin }) => isAllowedOrigin(origin),
+    // /editor: the extension (browsers always send Origin, so check it).
+    // /proxy: another copy of this server (Node sends no Origin; a web page cannot omit it).
+    verifyClient: ({ origin, req }) => {
+      const path = (req.url || '').split('?')[0];
+      if (path === '/editor') return isAllowedOrigin(origin);
+      if (path === '/proxy') return !origin;
+      return false;
+    },
   });
 
-  wss.on('listening', () => log(`bridge listening on ws://127.0.0.1:${PORT}/editor`));
+  wss.on('listening', () => {
+    setRole('owner');
+    log(`bridge listening on ws://127.0.0.1:${PORT}/editor`);
+  });
 
   wss.on('error', (err) => {
+    wss.close();
     if (err.code === 'EADDRINUSE') {
-      log(`port ${PORT} busy (another Claude session?), retrying in ${LISTEN_RETRY_MS / 1000}s`);
-      setTimeout(startBridge, LISTEN_RETRY_MS);
+      connectAsProxy();
     } else {
-      log('bridge error:', err.message);
+      setRole('blocked', `cannot listen on 127.0.0.1:${PORT}: ${err.message}`);
+      setTimeout(startBridge, LISTEN_RETRY_MS);
     }
   });
 
-  wss.on('connection', (ws) => {
-    // Newest editor tab wins
-    if (editor && editor !== ws) editor.close(4000, 'Replaced by a newer editor tab');
-    editor = ws;
-    log('editor connected');
-
-    ws.on('message', (data) => {
-      let msg;
-      try { msg = JSON.parse(data.toString()); } catch { return; }
-      const call = pending.get(msg.id);
-      if (!call) return;
-      pending.delete(msg.id);
-      clearTimeout(call.timer);
-      if (msg.error) call.reject(new Error(msg.error.message || 'Editor error'));
-      else call.resolve(msg.result);
-    });
-
-    ws.on('close', () => {
-      if (editor === ws) editor = null;
-      log('editor disconnected');
-    });
+  wss.on('connection', (ws, req) => {
+    if ((req.url || '').startsWith('/proxy')) acceptProxy(ws);
+    else acceptEditor(ws);
   });
 }
 
-function callEditor(method, params = {}) {
+function acceptEditor(ws) {
+  // Newest editor tab wins
+  if (editor && editor !== ws) editor.close(4000, 'Replaced by a newer editor tab');
+  editor = ws;
+  log('editor connected');
+  ws.on('message', (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (msg.id !== undefined) settle(msg.id, msg);
+  });
+  ws.on('close', () => {
+    if (editor === ws) editor = null;
+    log('editor disconnected');
+  });
+}
+
+// Owner side: forward a proxy's calls to the editor and send back the answer
+function acceptProxy(ws) {
+  bridge.proxies.add(ws);
+  log(`proxy connected (${bridge.proxies.size} other session(s))`);
+  sendJson(ws, { type: 'hello', app: 'mcr-mcp', pid: process.pid });
+  ws.on('message', async (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (msg.id === undefined || !msg.method) return;
+    try {
+      const result = msg.method === '__status' ? ownerStatus() : await callEditorLocal(msg.method, msg.params);
+      sendJson(ws, { id: msg.id, result });
+    } catch (err) {
+      sendJson(ws, { id: msg.id, error: { message: err.message } });
+    }
+  });
+  ws.on('close', () => {
+    bridge.proxies.delete(ws);
+    log('proxy disconnected');
+  });
+}
+
+// Proxy side: the port is taken; check it is a clip-editor server and relay through it
+function connectAsProxy() {
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/proxy`);
+  let greeted = false;
+  const handshake = setTimeout(() => ws.terminate(), HANDSHAKE_MS);
+
+  ws.on('message', (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (!greeted) {
+      if (msg.type !== 'hello' || msg.app !== 'mcr-mcp') return ws.terminate();
+      greeted = true;
+      clearTimeout(handshake);
+      bridge.upstream = ws;
+      bridge.ownerPid = msg.pid ?? null;
+      setRole('proxy', `port ${PORT} is owned by clip-editor server pid ${bridge.ownerPid} (another Claude session)`);
+      return;
+    }
+    if (msg.id !== undefined) settle(msg.id, msg);
+  });
+
+  ws.on('error', () => { /* 'close' follows */ });
+
+  ws.on('close', () => {
+    clearTimeout(handshake);
+    if (bridge.upstream === ws) {
+      bridge.upstream = null;
+      bridge.ownerPid = null;
+      rejectAll('The clip-editor server that owned the bridge exited; retry the call.');
+      // Owner gone: race the other proxies for the port (jitter avoids a stampede)
+      setRole('starting');
+      setTimeout(startBridge, 200 + Math.random() * 600);
+    } else if (!greeted) {
+      setRole('blocked',
+        `port ${PORT} is held by a process that did not answer as a clip-editor server — most likely an ` +
+        `older clip-editor server started by another Claude session (close that session or kill that ` +
+        `"node mcp/server.js" process), or an unrelated program. Retrying every ${LISTEN_RETRY_MS / 1000}s.`);
+      setTimeout(startBridge, LISTEN_RETRY_MS);
+    }
+  });
+}
+
+function ownerStatus() {
+  return {
+    editor_connected: !!editor && editor.readyState === editor.OPEN,
+    owner_pid: process.pid,
+    other_sessions: bridge.proxies.size,
+  };
+}
+
+function callEditorLocal(method, params = {}) {
   if (!editor || editor.readyState !== editor.OPEN) {
     return Promise.reject(new Error(
       'No clip editor is connected. Record a clip (or reopen the editor tab) in Chrome with the ' +
       'Marketing Clip Recorder extension; the editor connects automatically and shows "Claude: connected".'));
   }
+  return sendCall(editor, method, params, 'Editor');
+}
+
+function sendCall(ws, method, params, who) {
   const id = nextCallId++;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(new Error(`Editor did not answer "${method}" within ${CALL_TIMEOUT_MS / 1000}s`));
+      reject(new Error(`${who} did not answer "${method}" within ${CALL_TIMEOUT_MS / 1000}s`));
     }, CALL_TIMEOUT_MS);
     pending.set(id, { resolve, reject, timer });
-    editor.send(JSON.stringify({ id, method, params }));
+    ws.send(JSON.stringify({ id, method, params }));
   });
+}
+
+// Right after start-up the role may not be settled yet (listening / handshake)
+async function settledRole() {
+  const until = Date.now() + STARTUP_WAIT_MS;
+  while (bridge.role === 'starting' && Date.now() < until) await new Promise(r => setTimeout(r, 50));
+  return bridge.role;
+}
+
+async function callEditor(method, params = {}) {
+  const role = await settledRole();
+  if (role === 'owner') return callEditorLocal(method, params);
+  if (role === 'proxy' && bridge.upstream?.readyState === bridge.upstream?.OPEN) {
+    return sendCall(bridge.upstream, method, params, 'The owning clip-editor server');
+  }
+  if (role === 'blocked') throw new Error(`Clip editor bridge unavailable: ${bridge.blockedReason}`);
+  throw new Error(`Clip editor bridge is still starting on port ${PORT}; retry in a moment.`);
+}
+
+async function bridgeStatus() {
+  const role = await settledRole();
+  const base = { role, port: PORT, pid: process.pid };
+  if (role === 'owner') return { ...base, ...ownerStatus() };
+  if (role === 'proxy') {
+    try {
+      const owner = await sendCall(bridge.upstream, '__status', {}, 'The owning clip-editor server');
+      return {
+        ...base, ...owner,
+        note: 'Another Claude session owns the bridge port; this session relays through it. Both can edit the ' +
+          'same clip, so avoid editing from two sessions at once.',
+      };
+    } catch (err) {
+      return { ...base, editor_connected: false, error: err.message };
+    }
+  }
+  return { ...base, editor_connected: false, error: bridge.blockedReason || 'starting' };
 }
 
 // --- Tool result helpers ---
@@ -146,31 +309,48 @@ ZOOM & CAMERA (taste)
 - motion: "smooth" for most marketing, "snappy" for energetic/social clips, "calm" for enterprise/tutorials.
 - Use director shots (add_shot) for intent: wide shot after a scene change, close-up on a result (chart, success
   message) that has no click on it. 1.6–2.2× close-ups read best; avoid > 2.8×.
-- frame.enabled with a brand-coloured gradient background gives the polished "product video" look; padding 0.04–0.08.
+- frame.enabled gives the polished "product video" look; padding 0.04–0.08. Prefer a calm solid background (near-black,
+  off-white, or a muted brand tint); a subtle two-tone gradient at most — no saturated multi-colour gradients.
 
 TEXT
 - Short: titles ≤ 6 words, callouts ≤ 4 words, captions ≤ 10. One message on screen at a time (max 2 elements).
 - Opening title (1.5–2.5 s), then step callouts pointing at the element (anchor "video", use the event's
   element_rect / x,y), and a closing title/CTA. Match the language of the recorded UI unless told otherwise.
-- Keep a consistent look: same font, palette and corner radius for all texts (update_texts). Ensure contrast.
 - Timing: appear ~0.3 s before the action, stay ≥ 1.2 s, never overlap the element they point at.
 
+TEXT LOOK — editorial, not "AI template" (think Linear / Stripe / Apple / Notion launch videos)
+- The style defaults are already designed that way: start from them and override as little as possible.
+- Use 1–2 styles per video (e.g. title + caption, or title + callout), same font and radius throughout (update_texts).
+- Copy: concrete and specific ("Stage an empty room in 10 s"), not hype ("Unleash the magic of AI").
+  Sentence case, no exclamation marks, no decorative emojis (✨🚀🔥), no ①②③ or arrows as ornaments.
+- Colour: flat neutrals (near-black / white cards). The brand colour is an ACCENT only — callout tag, highlight
+  ring, lower-third bar — never a big gradient box. No background_gradient, glow or "strong" shadows unless the
+  user asks for that look.
+- Typography: medium weights (500–600; 700 at most for one short title), no ALL CAPS sentences, no wide
+  letter-spacing except on tiny labels. Keep sizes near the defaults (size 0.8–1.2).
+- Motion: "fade" or "slide-up" (short, a few pixels). Don't put "pop" on everything; never stack animated texts.
+- Layout: generous margins from the frame edge; left-aligned titles / lower-thirds read more editorial than
+  centring everything. Check contrast on both light and dark UI with get_frame.
+
 CURSOR
-- The real cursor is not in the recording; set_cursor draws it. Arrow + subtle ripple is a safe default; the glove
+- Chrome burns the real system cursor into tab recordings while the mouse moves (it cannot be turned off).
+  set_cursor draws a post-production cursor on top: keep cursor_size ≥ 40 so it covers the real one, or "none" to
+  leave only the original. Arrow + subtle ripple is a safe default; the glove
   ("hand") suits playful brands. Turn off click effects on clicks you un-zoomed if they distract.
 
 Everything is data: never edit the editor's source code to change a look. If something cannot be expressed with the
 tools, say what is missing.
 `.trim();
 
-const server = new McpServer({ name: 'clip-editor', version: '1.1.0' }, { instructions: DIRECTOR_GUIDE });
+const server = new McpServer({ name: 'clip-editor', version: '1.2.0' }, { instructions: DIRECTOR_GUIDE });
 
 const STYLE_HELP =
-  'Styles are layout presets with a default look: "title" (big centred heading, x/y = box centre), ' +
-  '"caption" (subtitle pill, x/y = centre), "lower-third" (card with accent bar, x = left edge, y = vertical centre), ' +
-  '"callout" (bubble whose pointer touches x/y — use anchor "video" and an event\'s x/y or element_rect centre), ' +
-  '"highlight" (glowing outline of a w×h box centred on x/y, optional label; use an event\'s element_rect), ' +
-  '"text" (no box, just text with a shadow). ' +
+  'Styles are layout presets with a sober default look: "title" (statement on a solid dark card, left-aligned ' +
+  'text, x/y = box centre), "caption" (one-line subtitle on a dark card, x/y = centre), "lower-third" (light card ' +
+  'with a thin accent bar, x = left edge, y = vertical centre), "callout" (small accent tag whose pointer touches ' +
+  'x/y — use anchor "video" and an event\'s x/y or element_rect centre), "highlight" (thin accent outline of a w×h ' +
+  'box centred on x/y, optional label; use an event\'s element_rect), "text" (no box; ink auto-switches dark/white ' +
+  'with the background). ' +
   'anchor "screen" = fixed on the output frame; "video" = glued to the recorded page so it follows zoom/pan. ' +
   'Coordinates are 0–1 fractions of the frame (screen) or of the recorded page (video). ' +
   'LOOK: every visual property can be overridden with the design fields (background, background_gradient, ' +
@@ -188,7 +368,7 @@ const designFields = {
   background: nullable(z.string()).describe('Box fill colour, or "transparent" for no box'),
   background_gradient: nullable(z.array(color).min(2).max(4)).describe('Gradient fill (overrides background)'),
   gradient_angle: nullable(z.number()).describe('Degrees, CSS convention: 90 = left→right (default), 180 = top→bottom'),
-  text_color: nullable(color),
+  text_color: nullable(color).describe('Any CSS colour, or "auto" = near-black or white, whichever reads on the background (plain "text" default)'),
   border_color: nullable(color),
   border_width: nullable(z.number().min(0).max(60)).describe('px at 1080p; 0 = no border'),
   radius: nullable(z.union([z.number().min(0).max(400), z.literal('pill')])).describe('Corner radius px at 1080p, or "pill"'),
@@ -239,6 +419,17 @@ server.registerTool('get_project', {
   inputSchema: {},
   annotations: { readOnlyHint: true },
 }, () => run(async () => asText(await callEditor('get_project'))));
+
+server.registerTool('get_status', {
+  title: 'Bridge status',
+  description:
+    'Reports whether the clip editor is reachable from this session. role "owner" = this session holds the ' +
+    'bridge port; "proxy" = another Claude session holds it and this one relays through it (works normally); ' +
+    '"blocked" = the port is taken by something else (error says what to do). editor_connected tells whether ' +
+    'an editor tab is open. Call it when a tool says no editor is connected.',
+  inputSchema: {},
+  annotations: { readOnlyHint: true },
+}, () => run(async () => asText(await bridgeStatus())));
 
 server.registerTool('get_frame', {
   title: 'Get video frame',
@@ -468,8 +659,9 @@ server.registerTool('remove_segment', {
 server.registerTool('set_cursor', {
   title: 'Set cursor & click effect',
   description:
-    'The cursor and click marks are drawn in post-production (nothing was burned in while recording), so they ' +
-    'can be changed or removed at any time. cursor: "none", "arrow", "hand" (cartoon white glove), "dot", or ' +
+    'The cursor and click marks are drawn in post-production on top of the recording, so they can be changed or ' +
+    'removed at any time (Chrome also burns the real cursor into the pixels while the mouse moves; cursor_size ' +
+    '≥ 40 covers it). cursor: "none", "arrow", "hand" (cartoon white glove), "dot", or ' +
     '"custom" with custom_image — SVG markup you write yourself (e.g. a branded pointer, a cartoon hand) or a ' +
     'data:image URL; set hotspot_x/hotspot_y (0–1 of the image) to the pointer tip. click_effect: "none", ' +
     '"ripple", "pulse", "burst". Sizes are px at 1080p and follow the zoom. Per-click on/off: update_events ' +

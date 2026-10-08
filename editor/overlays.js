@@ -16,30 +16,44 @@
 // Every visual property lives in `design`, so any look (colours, borders,
 // fonts, gradients, shadows…) is data — never a code change.
 
+// Each style has one job. Sizes are a fraction of the output height.
 const TEXT_STYLES = {
-  title:         { label: 'Title',       font: 0.065, maxWidth: 0.8,  desc: 'Big centred heading; x,y = box centre' },
-  caption:       { label: 'Caption',     font: 0.036, maxWidth: 0.75, desc: 'Subtitle pill; x,y = box centre' },
-  'lower-third': { label: 'Lower third', font: 0.040, maxWidth: 0.5,  desc: 'Card with accent bar on the left; x,y = left edge, vertical centre' },
-  callout:       { label: 'Callout',     font: 0.032, maxWidth: 0.4,  desc: 'Bubble whose pointer touches x,y (box placed above, or below near the top edge)' },
-  highlight:     { label: 'Highlight',   font: 0.028, maxWidth: 0.4,  desc: 'Glowing outline around a w×h box centred on x,y, optional label above it' },
-  text:          { label: 'Plain text',  font: 0.066, maxWidth: 0.85, desc: 'Text with no box (shadow for legibility); x,y = text centre' },
+  title:         { label: 'Title',       font: 0.054, maxWidth: 0.62, desc: 'Opening / closing statement on a solid dark card, left-aligned text; x,y = box centre' },
+  caption:       { label: 'Caption',     font: 0.030, maxWidth: 0.62, desc: 'One-line subtitle or step description on a dark card; x,y = box centre' },
+  'lower-third': { label: 'Lower third', font: 0.032, maxWidth: 0.42, desc: 'Light card with a thin accent bar, for a step name or label; x,y = left edge, vertical centre' },
+  callout:       { label: 'Callout',     font: 0.026, maxWidth: 0.32, desc: 'Small accent tag whose pointer touches x,y (box placed above, or below near the top edge)' },
+  highlight:     { label: 'Highlight',   font: 0.024, maxWidth: 0.32, desc: 'Thin accent outline around a w×h box centred on x,y, optional small label above it' },
+  text:          { label: 'Plain text',  font: 0.056, maxWidth: 0.7,  desc: 'Text with no box; ink turns near-black or white to read on what is behind it; x,y = text centre' },
 };
 
 const TEXT_ANIMATIONS = ['fade', 'slide-up', 'pop', 'typewriter', 'none'];
 const SHADOW_PRESETS = ['none', 'soft', 'strong', 'glow'];
 
-const DEFAULT_ACCENT = '#e03c3c';
+// Calm product blue, used sparingly (callout tag, highlight ring, lower-third bar)
+const DEFAULT_ACCENT = '#3e63dd';
+const LEGACY_ACCENT = '#e03c3c'; // the default before; v1 migration compares against it
 const FONT_STACK = 'Inter, "Segoe UI", system-ui, -apple-system, sans-serif';
 
 // Lengths are pixels at 1080p output height; they scale with the video.
 // 'accent' as a colour value means "use the overlay's accent".
+// *Em keys are internal defaults relative to the font size (not part of the
+// API); the matching API fields (radius, padding_x/y, letter_spacing) override them.
+// Look: flat opaque fills, medium weights, slightly tight tracking, moderate
+// radii, generous padding, a shadow only where a card must lift off the page.
 const STYLE_DESIGN = {
-  title:         { background: 'rgba(17,17,20,0.85)', textColor: '#ffffff', fontWeight: 800, radiusEm: 0.4,  align: 'center', shadow: 'soft' },
-  caption:       { background: 'rgba(0,0,0,0.72)',    textColor: '#ffffff', fontWeight: 600, radius: 'pill', align: 'center', shadow: 'soft' },
-  'lower-third': { background: '#ffffff',             textColor: '#15151a', fontWeight: 700, radiusEm: 0.25, align: 'left',   shadow: 'soft', bar: true },
-  callout:       { background: 'accent',              textColor: '#ffffff', fontWeight: 700, radiusEm: 0.45, align: 'center', shadow: 'soft' },
-  highlight:     { background: 'accent',              textColor: '#ffffff', fontWeight: 700, radiusEm: 0.45, align: 'center', shadow: 'soft' },
-  text:          { background: 'transparent',         textColor: '#ffffff', fontWeight: 800, radiusEm: 0,    align: 'center', shadow: 'strong', paddingEm: 0.15 },
+  title:         { background: '#111113', textColor: '#ffffff', fontWeight: 600, radiusEm: 0.26, align: 'left',   shadow: 'soft',
+                   lineHeight: 1.14, trackingEm: -0.022, padXEm: 0.75, padYEm: 0.55 },
+  caption:       { background: '#111113', textColor: '#f4f4f5', fontWeight: 500, radiusEm: 0.34, align: 'center', shadow: 'none',
+                   lineHeight: 1.35, trackingEm: -0.006, padXEm: 0.8,  padYEm: 0.5 },
+  'lower-third': { background: '#ffffff', textColor: '#111113', fontWeight: 600, radiusEm: 0.3,  align: 'left',   shadow: 'soft',
+                   lineHeight: 1.3,  trackingEm: -0.012, padXEm: 0.8,  padYEm: 0.55, bar: true,
+                   borderColor: 'rgba(17,17,19,0.10)', borderWidth: 1 },
+  callout:       { background: 'accent',  textColor: '#ffffff', fontWeight: 600, radiusEm: 0.3,  align: 'left',   shadow: 'soft',
+                   lineHeight: 1.3,  trackingEm: -0.006, padXEm: 0.65, padYEm: 0.42 },
+  highlight:     { background: 'accent',  textColor: '#ffffff', fontWeight: 600, radiusEm: 0.3,  align: 'left',   shadow: 'none',
+                   lineHeight: 1.3,  trackingEm: -0.004, padXEm: 0.6,  padYEm: 0.38 },
+  text:          { background: 'transparent', textColor: 'auto', fontWeight: 600, radiusEm: 0, align: 'center', shadow: 'strong',
+                   lineHeight: 1.15, trackingEm: -0.022, padXEm: 0.15, padYEm: 0.15 },
 };
 
 // Overridable design keys → validator. null in an update removes the override.
@@ -47,7 +61,7 @@ const DESIGN_KEYS = {
   background:      v => v === 'transparent' || isColor(v),
   gradient:        v => Array.isArray(v) && v.length >= 2 && v.length <= 4 && v.every(isColor),
   gradientAngle:   v => Number.isFinite(v),
-  textColor:       isColor,
+  textColor:       v => v === 'auto' || isColor(v), // auto: dark or white, whichever reads on the background
   borderColor:     isColor,
   borderWidth:     v => Number.isFinite(v) && v >= 0 && v <= 60,
   radius:          v => v === 'pill' || (Number.isFinite(v) && v >= 0 && v <= 400),
@@ -102,7 +116,7 @@ function createOverlay(params = {}) {
     w: 0.15,
     h: 0.08,
     anchor: style === 'callout' || style === 'highlight' ? 'video' : 'screen',
-    animation: style === 'title' || style === 'highlight' || style === 'text' ? 'pop' : 'slide-up',
+    animation: style === 'callout' || style === 'highlight' || style === 'text' ? 'fade' : 'slide-up',
     size: 1,
     accent: DEFAULT_ACCENT,
     design: {},
@@ -117,9 +131,9 @@ function normalizeOverlay(o) {
   // v1 projects encoded a coloured title card as "title with a non-default accent"
   if (!o.v) {
     o.design = o.design || {};
-    if (o.style === 'title' && o.accent && o.accent.toLowerCase() !== DEFAULT_ACCENT) {
+    if (o.style === 'title' && o.accent && o.accent.toLowerCase() !== LEGACY_ACCENT) {
       Object.assign(o.design, { background: o.accent, borderColor: '#000000', borderWidth: 6, textColor: '#0b0b0f' });
-      o.accent = DEFAULT_ACCENT;
+      o.accent = LEGACY_ACCENT;
     }
     o.v = 2;
   }
@@ -214,18 +228,22 @@ function fontsReady() {
   return Promise.all(fontLoads.values());
 }
 
+// The default face, loaded so every machine (and every export) sets the same type
+for (const w of [500, 600]) ensureFont('Inter', w);
+
 // --- Animation ---
 
+// Short entrances; exits a touch quicker so the next beat isn't delayed
 function overlayProgress(o, tMs) {
   const span = o.end - o.start;
-  const inDur = Math.min(350, span / 3);
+  const inDur = Math.min(280, span / 3);
+  const outDur = Math.min(200, span / 3);
   const kIn = Math.min(1, Math.max(0, (tMs - o.start) / inDur));
-  const kOut = Math.min(1, Math.max(0, (o.end - tMs) / inDur));
+  const kOut = Math.min(1, Math.max(0, (o.end - tMs) / outDur));
   return { k: easeOutCubic(Math.min(kIn, kOut)), kIn, elapsed: tMs - o.start };
 }
 
 function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
-function easeOutBack(t) { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); }
 
 // --- Text layout ---
 
@@ -260,11 +278,11 @@ function applyShadow(c, d, fontPx, accent, onText = false) {
   const preset = d.shadow || 'none';
   if (preset === 'none') { c.shadowColor = 'transparent'; return; }
   const P = {
-    soft:   { color: 'rgba(0,0,0,0.35)', blur: 0.6, y: 0.12 },
-    strong: { color: 'rgba(0,0,0,0.65)', blur: 0.9, y: 0.18 },
-    glow:   { color: accent,             blur: 1.0, y: 0 },
+    soft:   { color: 'rgba(0,0,0,0.16)', blur: 0.5, y: 0.1 },
+    strong: { color: 'rgba(0,0,0,0.45)', blur: 0.8, y: 0.12 },
+    glow:   { color: accent,             blur: 0.8, y: 0 },
   }[preset];
-  const k = onText ? (preset === 'glow' ? 0.5 : 0.25) : 1;
+  const k = onText ? (preset === 'glow' ? 0.5 : 0.35) : 1;
   c.shadowColor = d.shadowColor || P.color;
   c.shadowBlur = fontPx * P.blur * k;
   c.shadowOffsetX = 0;
@@ -325,15 +343,14 @@ function drawOverlay(c, o, tMs, view) {
   c.globalAlpha = animAlpha * (d.opacity ?? 1);
   const family = d.fontFamily ? `"${d.fontFamily}", ${FONT_STACK}` : FONT_STACK;
   c.font = `${d.italic ? 'italic ' : ''}${d.fontWeight || 700} ${fontPx}px ${family}`;
-  c.letterSpacing = `${(d.letterSpacing || 0) * u}px`;
+  c.letterSpacing = `${d.letterSpacing !== undefined ? d.letterSpacing * u : fontPx * (d.trackingEm || 0)}px`;
   c.textBaseline = 'middle';
 
   const lines = text ? wrapLines(c, text, W * (d.maxWidth ?? st.maxWidth)) : [];
   const lineH = fontPx * (d.lineHeight || 1.25);
-  const padEm = d.paddingEm ?? null;
-  const padX = d.paddingX !== undefined ? d.paddingX * u : fontPx * (padEm ?? 0.7);
-  const padY = d.paddingY !== undefined ? d.paddingY * u : fontPx * (padEm ?? 0.45);
-  const barW = d.bar ? fontPx * 0.22 : 0;
+  const padX = d.paddingX !== undefined ? d.paddingX * u : fontPx * (d.padXEm ?? 0.7);
+  const padY = d.paddingY !== undefined ? d.paddingY * u : fontPx * (d.padYEm ?? 0.45);
+  const barW = d.bar ? Math.max(3 * u, fontPx * 0.14) : 0;
   const textW = lines.reduce((m, l) => Math.max(m, c.measureText(l).width), 0);
   const boxW = textW + padX * 2 + barW;
   const boxH = lines.length * lineH + padY * 2;
@@ -361,17 +378,27 @@ function drawOverlay(c, o, tMs, view) {
   }
   if (!lines.length) { c.restore(); return; }
 
-  // Keep the box on screen
-  const m = fontPx * 0.4;
+  // Keep the box on screen, clear of the frame edge
+  const m = Math.max(fontPx * 0.4, H * 0.03);
   bx = Math.min(W - boxW - m, Math.max(m, bx));
   by = Math.min(H - boxH - m, Math.max(m, by));
   const cx = bx + boxW / 2, cy = by + boxH / 2;
 
-  // Entrance motion, then the static rotation
+  // 'auto' ink reads what is already drawn under the text (before any motion)
+  let ink = d.textColor || '#fff';
+  const fill = boxFill(c, d, bx, by, boxW, boxH);
+  let shadowOnText = !fill;
+  if (ink === 'auto') {
+    const light = backgroundIsLight(c, o, tMs, bx, by, boxW, boxH);
+    ink = light ? '#111113' : '#ffffff';
+    if (light) shadowOnText = false; // dark ink on a light page needs no shadow
+  }
+
+  // Entrance motion: a few pixels, no overshoot. Then the static rotation
   if (o.animation === 'slide-up') {
-    c.translate(0, (1 - k) * fontPx * 1.2);
+    c.translate(0, (1 - k) * H * 0.014);
   } else if (o.animation === 'pop') {
-    const s = 0.8 + 0.2 * easeOutBack(Math.min(kIn, 1));
+    const s = 0.96 + 0.04 * k;
     c.translate(cx, cy); c.scale(s, s); c.translate(-cx, -cy);
   }
   if (d.rotation) {
@@ -379,7 +406,6 @@ function drawOverlay(c, o, tMs, view) {
   }
 
   // Box: fill, border, accent bar, pointer
-  const fill = boxFill(c, d, bx, by, boxW, boxH);
   const radius = d.radius === 'pill' ? boxH / 2
     : d.radius !== undefined ? d.radius * u
     : fontPx * (d.radiusEm ?? 0.4);
@@ -410,8 +436,8 @@ function drawOverlay(c, o, tMs, view) {
   }
 
   // Text (gets the shadow itself when there is no box behind it)
-  if (!fill) applyShadow(c, d, fontPx, o.accent, true);
-  c.fillStyle = d.textColor || '#fff';
+  if (shadowOnText) applyShadow(c, d, fontPx, o.accent, true);
+  c.fillStyle = ink;
   c.textAlign = 'left';
   const innerL = bx + barW + padX, innerR = bx + boxW - padX;
   lines.forEach((line, i) => {
@@ -433,10 +459,35 @@ function drawOverlay(c, o, tMs, view) {
   c.restore();
 }
 
+// Average luminance of the canvas under a box, sampled a few times a second per
+// overlay (with hysteresis so the ink does not flicker on mid-grey backgrounds)
+const inkProbe = document.createElement('canvas');
+inkProbe.width = 16;
+inkProbe.height = 4;
+const inkProbeCtx = inkProbe.getContext('2d', { willReadFrequently: true });
+const inkCache = new Map(); // overlay id -> { t, light }
+
+function backgroundIsLight(c, o, tMs, x, y, w, h) {
+  const hit = inkCache.get(o.id);
+  if (hit && Math.abs(hit.t - tMs) < 250) return hit.light;
+  let light = hit ? hit.light : false;
+  try {
+    inkProbeCtx.clearRect(0, 0, inkProbe.width, inkProbe.height);
+    inkProbeCtx.drawImage(c.canvas, x, y, Math.max(1, w), Math.max(1, h), 0, 0, inkProbe.width, inkProbe.height);
+    const px = inkProbeCtx.getImageData(0, 0, inkProbe.width, inkProbe.height).data;
+    let sum = 0;
+    for (let i = 0; i < px.length; i += 4) sum += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+    const lum = sum / (px.length / 4) / 255;
+    light = light ? lum > 0.45 : lum > 0.6;
+  } catch { /* nothing drawn yet: keep the previous answer */ }
+  inkCache.set(o.id, { t: tMs, light });
+  return light;
+}
+
 function drawPointer(c, bx, by, boxW, boxH, px, py, fontPx) {
   const below = by > py; // box sits under the point
   const baseY = below ? by : by + boxH;
-  const half = fontPx * 0.45;
+  const half = fontPx * 0.36;
   const baseX = Math.min(bx + boxW - half * 2, Math.max(bx + half * 2, px));
   c.beginPath();
   c.moveTo(baseX - half, baseY);
@@ -446,7 +497,7 @@ function drawPointer(c, bx, by, boxW, boxH, px, py, fontPx) {
   c.fill();
   // Target dot
   c.beginPath();
-  c.arc(px, py, fontPx * 0.22, 0, Math.PI * 2);
+  c.arc(px, py, fontPx * 0.16, 0, Math.PI * 2);
   c.fill();
 }
 
@@ -454,13 +505,19 @@ function drawHighlightRing(c, o, view, px, py, zoomK, k) {
   const w = o.w * view.W * zoomK, h = o.h * view.H * zoomK;
   const pad = view.H * 0.006 * zoomK;
   c.save();
-  c.lineWidth = Math.max(2, view.H * 0.004);
+  // Crisp ring plus a faint wide halo of the same colour: reads on light and dark UI
   c.strokeStyle = o.accent;
-  c.shadowColor = o.accent;
-  c.shadowBlur = view.H * 0.02 * k;
-  // Grow in from 85 % size
-  const g = 0.85 + 0.15 * k;
-  roundRect(c, px - (w / 2 + pad) * g, py - (h / 2 + pad) * g, (w + pad * 2) * g, (h + pad * 2) * g, view.H * 0.01);
+  const g = 0.97 + 0.03 * k; // settles in from 97 % size
+  const rx = px - (w / 2 + pad) * g, ry = py - (h / 2 + pad) * g;
+  const rw = (w + pad * 2) * g, rh = (h + pad * 2) * g, rr = view.H * 0.008;
+  const alpha = c.globalAlpha;
+  c.globalAlpha = alpha * 0.18;
+  c.lineWidth = Math.max(4, view.H * 0.008);
+  roundRect(c, rx, ry, rw, rh, rr);
+  c.stroke();
+  c.globalAlpha = alpha;
+  c.lineWidth = Math.max(2, view.H * 0.0034);
+  roundRect(c, rx, ry, rw, rh, rr);
   c.stroke();
   c.restore();
 }

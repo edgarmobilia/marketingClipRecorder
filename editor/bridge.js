@@ -35,26 +35,13 @@ function connectBridge() {
     ws.send(JSON.stringify({ type: 'hello', app: 'mcr-editor', version: 1 }));
   });
 
-  ws.addEventListener('message', async (e) => {
+  ws.addEventListener('message', (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     if (!msg || msg.id === undefined || !msg.method) return;
-
-    setClaudeStatus('busy', `Claude: ${msg.method.replace(/_/g, ' ')}…`);
-    try {
-      const handler = BRIDGE_METHODS[msg.method];
-      if (!handler) throw new Error(`Unknown method "${msg.method}"`);
-      if (!editorReady) throw new Error('The editor is still loading the recording; try again in a moment.');
-      if (exportBtn.disabled && !['get_project', 'get_status'].includes(msg.method)) {
-        throw new Error('An export is in progress; wait for it to finish.');
-      }
-      const result = await handler(msg.params || {});
-      ws.send(JSON.stringify({ id: msg.id, result }));
-    } catch (err) {
-      ws.send(JSON.stringify({ id: msg.id, error: { message: err.message || String(err) } }));
-    } finally {
-      if (ws.readyState === WebSocket.OPEN) setClaudeStatus('online', 'Claude: connected');
-    }
+    // One call at a time: concurrent calls (parallel tools, or two Claude
+    // sessions sharing the bridge) would otherwise interleave their seeks
+    bridgeQueue = bridgeQueue.then(() => handleBridgeCall(ws, msg));
   });
 
   ws.addEventListener('close', () => {
@@ -63,6 +50,27 @@ function connectBridge() {
     setTimeout(connectBridge, RETRY_MS);
   });
   // 'error' is always followed by 'close', which handles the retry
+}
+
+let bridgeQueue = Promise.resolve();
+
+async function handleBridgeCall(ws, msg) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const reply = (obj) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msg.id, ...obj })); };
+  setClaudeStatus('busy', `Claude: ${msg.method.replace(/_/g, ' ')}…`);
+  try {
+    const handler = BRIDGE_METHODS[msg.method];
+    if (!handler) throw new Error(`Unknown method "${msg.method}"`);
+    if (!editorReady) throw new Error('The editor is still loading the recording; try again in a moment.');
+    if (exportBtn.disabled && !['get_project', 'get_status'].includes(msg.method)) {
+      throw new Error('An export is in progress; wait for it to finish.');
+    }
+    reply({ result: await handler(msg.params || {}) });
+  } catch (err) {
+    reply({ error: { message: err.message || String(err) } });
+  } finally {
+    if (ws.readyState === WebSocket.OPEN) setClaudeStatus('online', 'Claude: connected');
+  }
 }
 
 // --- Serialization (editor units → API units: seconds, 0–1 coordinates) ---
@@ -227,18 +235,60 @@ function textParams(p) {
 
 // --- Frame capture ---
 
-function seekExact(timeSec) {
+// 'seeked' only means the new frame is decoded: Chrome may still hand the
+// previous frame to drawImage() until it has been presented. In a hidden tab
+// that happens on the compositor's background-render tick (~250 ms), and
+// requestVideoFrameCallback does not fire at all — so race the two.
+const SEEK_TIMEOUT_MS = 3000;
+const PRESENT_WAIT_VISIBLE_MS = 120;
+const PRESENT_WAIT_HIDDEN_MS = 400;
+
+// Resolves when the next video frame is presented; cancel() stops waiting
+function nextPresentedFrame() {
+  let handle = null;
+  const promise = new Promise((resolve) => {
+    if (typeof sourceVideo.requestVideoFrameCallback === 'function') {
+      handle = sourceVideo.requestVideoFrameCallback(() => resolve(true));
+    }
+  });
+  return { promise, cancel: () => { if (handle !== null) sourceVideo.cancelVideoFrameCallback(handle); } };
+}
+
+async function seekExact(timeSec) {
   stopPlaybackLoop();
   if (!sourceVideo.paused) sourceVideo.pause();
   isPlaying = false;
   playPauseBtn.textContent = '▶';
   const t = Math.max(0, Math.min(timeSec, sourceVideo.duration || 0));
-  return new Promise((resolve) => {
-    if (Math.abs(sourceVideo.currentTime - t) < 0.001 && sourceVideo.readyState >= 2) return resolve();
-    const timer = setTimeout(resolve, 3000);
-    sourceVideo.addEventListener('seeked', () => { clearTimeout(timer); resolve(); }, { once: true });
-    sourceVideo.currentTime = t;
-  });
+  if (Math.abs(sourceVideo.currentTime - t) < 0.001 && sourceVideo.readyState >= 2) return;
+
+  const deadline = Date.now() + SEEK_TIMEOUT_MS;
+  const left = () => Math.max(0, deadline - Date.now());
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const seekTo = () => Promise.race([
+    new Promise(r => {
+      sourceVideo.addEventListener('seeked', r, { once: true });
+      sourceVideo.currentTime = t;
+    }),
+    sleep(left()),
+  ]);
+
+  // Armed before the seek: a paused video only presents a frame because of it
+  const presented = nextPresentedFrame();
+  try {
+    await seekTo();
+    const wait = document.hidden ? PRESENT_WAIT_HIDDEN_MS : PRESENT_WAIT_VISIBLE_MS;
+    const ok = await Promise.race([presented.promise, sleep(Math.min(wait, left())).then(() => false)]);
+    // Not confirmed (hidden tab, or a media pipeline Chrome suspended while idle):
+    // there drawImage() lags one seek behind, so seeking to the same time again
+    // flushes the frame we want; then give it one more short beat
+    if (!ok && left() > 0) {
+      await seekTo();
+      await Promise.race([presented.promise, sleep(Math.min(PRESENT_WAIT_VISIBLE_MS, left()))]);
+    }
+  } finally {
+    presented.cancel();
+  }
 }
 
 async function renderAt(timeSec, rendered) {

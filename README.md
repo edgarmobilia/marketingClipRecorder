@@ -77,8 +77,10 @@ This extension is not published on the Chrome Web Store. Install it as an unpack
 
 ## Floating texts
 
-Open the **Texts** tab and pick a style: *Title*, *Caption*, *Lower third*, *Callout* (bubble pointing at
-something), *Highlight* (glowing outline around an element) or *Plain text*. Choose colours from the swatches and an
+Open the **Texts** tab and pick a style: *Title*, *Caption*, *Lower third*, *Callout* (small tag pointing at
+something), *Highlight* (thin outline around an element) or *Plain text*. The defaults aim for an editorial product-
+video look — flat neutral cards, medium weights, the accent colour used sparingly, short fade/slide motion — and
+*Plain text* switches between dark and white ink to read on whatever is behind it. Choose colours from the swatches and an
 animation with one click; sizes, timing, font, border and shadow are under **More options**. A text can be **fixed on
 screen** or **follow the zoom**. Drag a selected text on the preview to place it, drag its bar on the timeline to
 retime it. `Ctrl + Z` undoes any edit. Edits are saved automatically and survive reopening the editor.
@@ -86,9 +88,10 @@ retime it. `Ctrl + Z` undoes any edit. Edits are saved automatically and survive
 The **Zooms** tab works the same way: one-click zoom style (*Subtle*, *Normal*, *Punchy*), a switch per event, and all
 the numbers tucked under **Advanced**.
 
-The **Cursor** tab draws the pointer and the click marks over the video (tab recordings don't include the real
-cursor): *None*, *Arrow*, *Glove*, *Dot* or *Custom* (upload a PNG/SVG), plus a click effect and its colour. Each
-click's effect can be switched off in the Zooms tab.
+The **Cursor** tab draws the pointer and the click marks over the video: *None*, *Arrow*, *Glove*, *Dot* or *Custom*
+(upload a PNG/SVG), plus a click effect and its colour. Each click's effect can be switched off in the Zooms tab.
+Note that Chrome burns the real system cursor into tab recordings whenever the mouse moves, and no Chrome API can turn
+that off; keep the drawn cursor at least as large as the real one so it covers it.
 
 The **Cuts** tab removes or fast-forwards boring stretches (waiting, loading): **Cut here**, **Speed up here**
 (2–16×, with a small ⏩ badge in the video), or **Speed up idle parts automatically**, which finds stretches with no
@@ -131,7 +134,12 @@ rendered frames and fixes what looks off.
 (*smooth*, *snappy*, *calm*), automatic pull-back on long pans, motion blur, director **shots** (wide shot or
 close-up on any region for any stretch), and an optional inset **frame** on a colour/gradient background.
 
-Tools: `get_project`, `get_frame`, `get_contact_sheet`, `seek`, `update_events`, `set_camera`, `add_text`,
+**Several Claude sessions:** each session starts its own `mcp/server.js`, but only one can own the bridge port. The
+first one does; later ones detect it and relay their calls through it, so every session can edit the open clip (and
+if the owner exits, another takes over). If the port is held by something else, tools say so explicitly;
+`get_status` shows the role (`owner` / `proxy` / `blocked`) and whether the editor is connected.
+
+Tools: `get_status`, `get_project`, `get_frame`, `get_contact_sheet`, `seek`, `update_events`, `set_camera`, `add_text`,
 `update_text`, `update_texts` (restyle many at once), `remove_text`, `find_idle`, `add_segment`, `update_segment`,
 `remove_segment` (cut / speed up stretches), `add_shot`, `update_shot`, `remove_shot`, `analyze_video`,
 `apply_edits`, `set_cursor` (any cursor — Claude can even draw one as SVG — and click

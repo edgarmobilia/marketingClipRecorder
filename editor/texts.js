@@ -83,7 +83,7 @@ function switchTab(tab) {
 // --- Text panel ---
 // Friendly by default: chips and swatches; every number lives under "More".
 
-const SWATCHES = ['#ffffff', '#111114', '#e03c3c', '#f59e0b', '#10b981', '#3b82f6', '#7dd3fc', '#a855f7'];
+const SWATCHES = ['#ffffff', '#111113', '#3e63dd', '#e03c3c', '#f59e0b', '#10b981', '#7dd3fc', '#a855f7'];
 const FONT_CHOICES = ['', 'Inter', 'Poppins', 'Montserrat', 'Bebas Neue', 'Space Grotesk', 'Playfair Display', 'Caveat'];
 const ANIM_LABELS = { fade: 'Fade', 'slide-up': 'Slide', pop: 'Pop', typewriter: 'Type', none: 'None' };
 const NEW_TEXT = { title: 'Your title', caption: 'Caption text', 'lower-third': 'Step 1 · Do this',
@@ -302,7 +302,8 @@ function bindTextEditor(item, o) {
   $('.t-end').addEventListener('change', e => updateText(o.id, { end: parseFloat(e.target.value) * 1000 }));
   $('.t-font').addEventListener('change', e => updateText(o.id, { design: { fontFamily: e.target.value || null } }));
   $('.t-border').addEventListener('change', e => updateText(o.id, {
-    design: e.target.checked ? { borderWidth: 4, borderColor: o.design.borderColor || '#000000' } : { borderWidth: null },
+    // 0, not null: some styles have a hairline border by default
+    design: e.target.checked ? { borderWidth: 2, borderColor: o.design.borderColor || 'rgba(17,17,19,0.18)' } : { borderWidth: 0 },
   }));
   $('.t-upper').addEventListener('change', e => updateText(o.id, { design: { uppercase: e.target.checked || null } }));
   $('.t-shadow').addEventListener('change', e => updateText(o.id, { design: { shadow: e.target.checked ? 'soft' : 'none' } }));
