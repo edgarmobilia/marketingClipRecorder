@@ -31,6 +31,9 @@ let cameraOptions = {
   autoZoom: true,      // zoom level from the clicked element's size
   zoomIntensity: 1,    // multiplier on auto zoom
   motionBlur: true,
+  speedBadge: true,    // "⏩ N×" tag while a speed-up plays
+  aspect: 'source',    // output format: key of ASPECTS
+  aspectMode: 'crop',  // other ratio: 'crop' follows the action, 'fit' shows it all
   // Inset frame on a background (off = full-bleed recording)
   frame: { enabled: false, padding: 0.06, radius: 18, background: ['#1e293b', '#0f172a'], shadow: true },
 };
@@ -105,9 +108,11 @@ function zoomLevelOf(c) {
   if (!cameraOptions.autoZoom || c.zoomAuto === false || !c.rect || !c.vw) return c.zoomLevel;
   const rw = Math.max(0.02, c.rect.w / c.vw);
   const rh = Math.max(0.02, c.rect.h / c.vh);
-  // Element (plus breathing room) ≈ 38 % of the width or 42 % of the height
-  const fit = Math.min(0.38 / rw, 0.42 / rh) * (cameraOptions.zoomIntensity || 1);
-  return Math.min(AUTO_ZOOM_MAX, Math.max(AUTO_ZOOM_MIN, fit));
+  // Element (plus breathing room) ≈ 38 % of the visible width or 42 % of the
+  // height. A crop window already shows less, so it may need no zoom at all
+  const { fx, fy } = visibleFraction();
+  const fit = Math.min(0.38 * fx / rw, 0.42 * fy / rh) * (cameraOptions.zoomIntensity || 1);
+  return Math.min(AUTO_ZOOM_MAX, Math.max(isCropping() ? 1 : AUTO_ZOOM_MIN, fit));
 }
 
 // Scale is interpolated in log space so 1×→2× feels as fast as 2×→4×
@@ -178,10 +183,18 @@ function buildCameraPath() {
   const cxArr = new Float32Array(steps);
   const cyArr = new Float32Array(steps);
   const motion = MOTION_PRESETS[cameraOptions.motion] || MOTION_PRESETS.smooth;
+  // Cropping (vertical/square from a wide recording) shows only part of the
+  // page even at 1×, so the camera keeps following then too
+  const crop = isCropping();
+  const { fx, fy } = visibleFraction();
 
   const active = clicks.filter(c => c.enabled)
     .map(c => ({ c, lvl: zoomLevelOf(c), ...zoomTimes(c) }))
     .sort((a, b) => a.start - b.start);
+  // Where to look. A crop window must still aim at events whose zoom is off
+  const focus = crop
+    ? clicks.map(c => ({ c, start: zoomTimes(c).start })).sort((a, b) => a.start - b.start)
+    : active;
 
   // Bridges keep the zoom up between events that are close together
   const bridges = [];
@@ -211,20 +224,20 @@ function buildCameraPath() {
     }
 
     // 2. Focus target: the event the camera is currently heading to
-    while (focusIdx + 1 < active.length && active[focusIdx + 1].start <= tMs) {
+    while (focusIdx + 1 < focus.length && focus[focusIdx + 1].start <= tMs) {
       focusIdx++;
-      anchorX = active[focusIdx].c.nx;
-      anchorY = active[focusIdx].c.ny;
+      anchorX = focus[focusIdx].c.nx;
+      anchorY = focus[focusIdx].c.ny;
     }
 
     // 3. Soft cursor follow: only pan once the cursor leaves the dead zone
-    if (cameraOptions.followCursor && s > 1.01) {
+    if (cameraOptions.followCursor && (s > 1.01 || crop)) {
       const cur = cursorAt(tMs);
       if (cur) {
-        const zone = motion.deadzone / s;
+        const zoneX = motion.deadzone * fx / s, zoneY = motion.deadzone * fy / s;
         const dx = cur.nx - anchorX, dy = cur.ny - anchorY;
-        if (Math.abs(dx) > zone) anchorX = cur.nx - Math.sign(dx) * zone;
-        if (Math.abs(dy) > zone) anchorY = cur.ny - Math.sign(dy) * zone;
+        if (Math.abs(dx) > zoneX) anchorX = cur.nx - Math.sign(dx) * zoneX;
+        if (Math.abs(dy) > zoneY) anchorY = cur.ny - Math.sign(dy) * zoneY;
       }
     }
 
@@ -239,7 +252,7 @@ function buildCameraPath() {
     }
 
     // 5. Spring the focus point toward the target (snap while fully zoomed out)
-    if (prevScale <= 1.01) {
+    if (i === 0 || (prevScale <= 1.01 && !crop)) {
       x = targetX; y = targetY; vx = 0; vy = 0;
     } else {
       const w = motion.omega, z = motion.zeta;
@@ -250,7 +263,7 @@ function buildCameraPath() {
     }
 
     // 6. Long trips while zoomed in pull back a little mid-way (orientation)
-    const travel = Math.hypot(targetX - x, targetY - y) * s; // in "screens"
+    const travel = Math.hypot((targetX - x) / fx, (targetY - y) / fy) * s; // in "screens"
     const wantDip = 1 + 0.9 * Math.max(0, travel - 0.3);
     dip += (wantDip - dip) * lp;
     const sOut = Math.max(1, s / dip);
@@ -270,33 +283,91 @@ function getCamera(timeSec) {
   return { scale: cameraPath.scale[i], cx: cameraPath.cx[i], cy: cameraPath.cy[i] };
 }
 
+// --- Output format ---
+// aspect 'source' keeps the recording's shape. Any other ratio either crops
+// (the camera follows the action through a narrower window) or fits the whole
+// recording on the frame background (aspectMode 'fit').
+const ASPECTS = { source: null, '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1, '4:5': 4 / 5 };
+
+function outputRatio() {
+  return ASPECTS[cameraOptions.aspect] || null;
+}
+
+function isCropping() {
+  return !!outputRatio() && cameraOptions.aspectMode !== 'fit';
+}
+
+// The recording's short side stays; the ratio sets the other one
+function outputSize() {
+  const sw = sourceVideo.videoWidth, sh = sourceVideo.videoHeight;
+  const r = outputRatio();
+  if (!r) return { W: sw, H: sh };
+  const short = Math.min(sw, sh);
+  const even = v => Math.round(v / 2) * 2; // encoders want even dimensions
+  return r >= 1 ? { W: even(short * r), H: short } : { W: short, H: even(short / r) };
+}
+
+function applyOutputSize() {
+  if (!sourceVideo.videoWidth) return;
+  const { W, H } = outputSize();
+  if (previewCanvas.width === W && previewCanvas.height === H) return;
+  previewCanvas.width = W;
+  previewCanvas.height = H;
+  // Resizing the canvas resets its state; zoomed frames need the best resampling
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+}
+
 // --- Canvas rendering ---
 let lastView = null; // camera transform of the last rendered frame (for canvas dragging)
 
-// Inset "marketing frame": the recording sits on a background with padding,
-// rounded corners and a shadow. Returns the inner box in canvas pixels.
-function frameBox(W, H) {
+// Where the recording sits on the canvas: vp = the window it shows through
+// (canvas px), b = recording px → canvas px at 1×. The inset "marketing
+// frame" (padding, rounded corners, shadow) shrinks the available area.
+function layoutBox(W, H) {
+  const sw = sourceVideo.videoWidth || W, sh = sourceVideo.videoHeight || H;
   const f = cameraOptions.frame;
-  if (!f || !f.enabled) return { ox: 0, oy: 0, k: 1 };
-  const k = 1 - 2 * Math.min(0.2, Math.max(0, f.padding ?? 0.06));
-  return { ox: (W - W * k) / 2, oy: (H - H * k) / 2, k };
+  const k = f && f.enabled ? 1 - 2 * Math.min(0.2, Math.max(0, f.padding ?? 0.06)) : 1;
+  const area = { x: (W - W * k) / 2, y: (H - H * k) / 2, w: W * k, h: H * k };
+  if (isCropping()) return { vp: area, b: Math.max(area.w / sw, area.h / sh) };
+  const b = Math.min(area.w / sw, area.h / sh);
+  const w = sw * b, h = sh * b;
+  return { vp: { x: area.x + (area.w - w) / 2, y: area.y + (area.h - h) / 2, w, h }, b };
 }
 
+// Share of the recording visible at 1× (1 × 1 unless cropping)
+function visibleFraction() {
+  if (!isCropping()) return { fx: 1, fy: 1 };
+  const { vp, b } = layoutBox(previewCanvas.width, previewCanvas.height);
+  return {
+    fx: Math.min(1, vp.w / (sourceVideo.videoWidth * b)),
+    fy: Math.min(1, vp.h / (sourceVideo.videoHeight * b)),
+  };
+}
+
+// view: the recording is drawn at (tx, ty) with size vw·s × vh·s; one
+// transform for video, cursor and 'video' texts. U = design reference size.
 function cameraView(timeSec) {
   const W = previewCanvas.width;
   const H = previewCanvas.height;
-  const { ox, oy, k } = frameBox(W, H);
+  const { vp, b } = layoutBox(W, H);
+  const vw = sourceVideo.videoWidth * b, vh = sourceVideo.videoHeight * b;
   const { scale: s, cx, cy } = getCamera(timeSec);
-  let tx = 0, ty = 0, sc = 1;
-  if (s > 1.001) {
-    // Put the focus point at the centre, clamped so the scaled video always
-    // covers the whole (inner) frame
-    sc = s;
-    tx = Math.max(W - W * s, Math.min(0, W / 2 - cx * W * s));
-    ty = Math.max(H - H * s, Math.min(0, H / 2 - cy * H * s));
-  }
-  // Compose with the inset: one transform for video, cursor and 'video' texts
-  return { W, H, s: sc * k, tx: ox + tx * k, ty: oy + ty * k };
+  const sc = s > 1.001 || isCropping() ? s : 1;
+  // Put the focus point at the centre of the window, clamped so the scaled
+  // video always covers it
+  const tx = vp.x + Math.max(vp.w - vw * sc, Math.min(0, vp.w / 2 - cx * vw * sc));
+  const ty = vp.y + Math.max(vp.h - vh * sc, Math.min(0, vp.h / 2 - cy * vh * sc));
+  return { W, H, U: Math.min(W, H), vw, vh, vp, s: sc, tx, ty };
+}
+
+// The untouched recording, whole, centred on the canvas
+function rawView(W, H) {
+  const sw = sourceVideo.videoWidth || W, sh = sourceVideo.videoHeight || H;
+  const b = Math.min(W / sw, H / sh);
+  const vw = sw * b, vh = sh * b;
+  const vp = { x: (W - vw) / 2, y: (H - vh) / 2, w: vw, h: vh };
+  return { W, H, U: Math.min(W, H), vw, vh, vp, s: 1, tx: vp.x, ty: vp.y };
 }
 
 function drawFrameBackground(W, H) {
@@ -311,59 +382,73 @@ function drawFrameBackground(W, H) {
   ctx.fillRect(0, 0, W, H);
 }
 
-function drawVideoLayer(view) {
-  const { W, H, s, tx, ty } = view;
+// source: the <video> while editing, a decoded VideoSample while exporting
+function drawVideoLayer(view, source = sourceVideo) {
+  const { vw, vh, s, tx, ty } = view;
   ctx.save();
   ctx.translate(tx, ty);
   ctx.scale(s, s);
-  ctx.drawImage(sourceVideo, 0, 0, W, H);
+  if (source === sourceVideo) ctx.drawImage(sourceVideo, 0, 0, vw, vh);
+  else source.draw(ctx, 0, 0, vw, vh);
   ctx.restore();
 }
 
 // raw = the untouched recording (no zoom, no texts, no frame)
-function renderFrame(timeSec, { raw = false } = {}) {
+function renderFrame(timeSec, { raw = false, source = sourceVideo } = {}) {
   const W = previewCanvas.width, H = previewCanvas.height;
-  const view = raw ? { W, H, s: 1, tx: 0, ty: 0 } : cameraView(timeSec);
+  const view = raw ? rawView(W, H) : cameraView(timeSec);
   const framed = !raw && cameraOptions.frame && cameraOptions.frame.enabled;
+  const { vp } = view;
+  // The recording doesn't cover the canvas: 'fit' bars, inset frame or raw
+  const boxed = vp.x > 0.5 || vp.y > 0.5 || vp.w < W - 0.5 || vp.h < H - 0.5;
 
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   if (framed) {
-    const { ox, oy, k } = frameBox(W, H);
-    const r = (cameraOptions.frame.radius ?? 18) * H / 1080;
+    const r = (cameraOptions.frame.radius ?? 18) * view.U / 1080;
     drawFrameBackground(W, H);
     if (cameraOptions.frame.shadow !== false) {
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.45)';
-      ctx.shadowBlur = H * 0.04;
-      ctx.shadowOffsetY = H * 0.012;
+      ctx.shadowBlur = view.U * 0.04;
+      ctx.shadowOffsetY = view.U * 0.012;
       ctx.fillStyle = '#000';
-      roundRect(ctx, ox, oy, W * k, H * k, r);
+      roundRect(ctx, vp.x, vp.y, vp.w, vp.h, r);
       ctx.fill();
       ctx.restore();
     }
-    roundRect(ctx, ox, oy, W * k, H * k, r);
+    roundRect(ctx, vp.x, vp.y, vp.w, vp.h, r);
+    ctx.clip();
+  } else if (boxed) {
+    if (raw) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      drawFrameBackground(W, H);
+    }
+    ctx.beginPath();
+    ctx.rect(vp.x, vp.y, vp.w, vp.h);
     ctx.clip();
   }
 
   // Motion blur: average a few sub-frame camera positions when moving fast
   const prev = !raw && cameraOptions.motionBlur !== false ? cameraView(Math.max(0, timeSec - 1 / CAMERA_FPS)) : null;
-  const speed = prev ? Math.abs(prev.tx - view.tx) + Math.abs(prev.ty - view.ty) + Math.abs(prev.s - view.s) * W * 0.5 : 0;
+  const speed = prev ? Math.abs(prev.tx - view.tx) + Math.abs(prev.ty - view.ty) + Math.abs(prev.s - view.s) * view.vw * 0.5 : 0;
   if (speed > W * 0.004) {
     const N = 4;
     for (let i = 0; i < N; i++) {
       const k = i / (N - 1);
       ctx.globalAlpha = 1 / (i + 1); // running average, newest last
       drawVideoLayer({
-        W, H,
+        ...view,
         s: prev.s + (view.s - prev.s) * k,
         tx: prev.tx + (view.tx - prev.tx) * k,
         ty: prev.ty + (view.ty - prev.ty) * k,
-      });
+      }, source);
     }
     ctx.globalAlpha = 1;
   } else {
-    drawVideoLayer(view);
+    drawVideoLayer(view, source);
   }
 
   if (!raw) drawCursorLayer(ctx, timeSec * 1000, view);
@@ -371,7 +456,7 @@ function renderFrame(timeSec, { raw = false } = {}) {
 
   if (!raw) {
     drawOverlays(ctx, timeSec * 1000, view);
-    drawSpeedBadge(ctx, timeSec, view);
+    if (cameraOptions.speedBadge !== false) drawSpeedBadge(ctx, timeSec, view);
   }
   lastView = view;
 }
@@ -508,6 +593,7 @@ function undo() {
 
 // Single place to refresh everything after the project changes
 function projectChanged() {
+  applyOutputSize();
   invalidateCamera();
   syncCameraControls();
   renderClickList();
@@ -585,12 +671,7 @@ function setupVideo(blob) {
   sourceVideo.addEventListener('loadedmetadata', async () => {
     await ensureFiniteDuration();
 
-    // Set canvas to video resolution
-    previewCanvas.width = sourceVideo.videoWidth;
-    previewCanvas.height = sourceVideo.videoHeight;
-    // Resizing the canvas resets its state; zoomed frames need the best resampling
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    applyOutputSize();
     console.log(`[MCR editor] Source ${sourceVideo.videoWidth}x${sourceVideo.videoHeight}`);
 
     totalTimeEl.textContent = fmtTime(sourceVideo.duration);
@@ -1053,6 +1134,19 @@ function setupDefaultSliders() {
     saveProject();
   };
   followEl.addEventListener('change', onCameraChange);
+
+  // Output format: resizes the canvas, so the camera path is rebuilt too
+  const aspectEl = document.getElementById('aspectSelect');
+  const aspectModeEl = document.getElementById('aspectModeSelect');
+  const onFormatChange = () => {
+    pushHistory();
+    cameraOptions.aspect = aspectEl.value;
+    cameraOptions.aspectMode = aspectModeEl.value;
+    chrome.storage.sync.set({ mcrCameraOptions: cameraOptions });
+    projectChanged();
+  };
+  aspectEl.addEventListener('change', onFormatChange);
+  aspectModeEl.addEventListener('change', onFormatChange);
   mergeEl.addEventListener('pointerdown', pushHistory);
   mergeEl.addEventListener('input', onCameraChange);
 }
@@ -1076,121 +1170,13 @@ function syncCameraControls() {
   document.getElementById('followCursor').checked = cameraOptions.followCursor;
   document.getElementById('mergeGap').value = cameraOptions.mergeGap;
   document.getElementById('mergeGapVal').textContent = Math.round(cameraOptions.mergeGap) + 'ms';
-}
-
-// --- Export ---
-exportBtn.addEventListener('click', exportVideo);
-
-// --- Export (MediaRecorder) ---
-// MP4 (H.264) is accepted by every social/marketing tool; fall back to
-// high-bitrate VP9 WebM on Chrome builds that can't record MP4
-const EXPORT_MIME_TYPES = [
-  'video/mp4;codecs=avc1.640028,mp4a.40.2',
-  'video/mp4;codecs=avc1,mp4a.40.2',
-  'video/mp4',
-  'video/webm;codecs=vp9,opus',
-  'video/webm;codecs=vp9',
-];
-
-async function exportVideo() {
-  if (!videoBlob) return;
-
-  exportBtn.disabled = true;
-  previewBtn.disabled = true;
-  exportOverlay.style.display = 'flex';
-  exportFill.style.width = '0%';
-  exportPercent.textContent = 'Recording (do not switch tabs)...';
-
-  try {
-    // Positioning at the start (after a cut that begins at 0, if any)
-    seekTo(firstPlayableSec());
-    // Give enough time to ensure UI is ready and the frame is painted
-    await new Promise(r => setTimeout(r, 600));
-
-    // Capture the stream at 60 FPS for buttery smooth Marketing videos
-    ensureAudioCapture();
-    const stream = previewCanvas.captureStream(60);
-    audioExportDestination.stream.getAudioTracks().forEach(track => stream.addTrack(track));
-
-    const exportMime = EXPORT_MIME_TYPES.find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
-    const exportExt = exportMime.startsWith('video/mp4') ? 'mp4' : 'webm';
-    // Zoomed frames magnify every compression artefact, so export with a
-    // generous bitrate scaled to the canvas size (≈40 Mbps at 1440p60)
-    const videoBitsPerSecond = Math.round(Math.min(80_000_000, Math.max(12_000_000,
-      previewCanvas.width * previewCanvas.height * 60 * 0.18)));
-    const mediaRecorder = new MediaRecorder(stream, {
-      mimeType: exportMime,
-      videoBitsPerSecond,
-      audioBitsPerSecond: 192_000,
-    });
-
-    const recordedChunks = [];
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        recordedChunks.push(e.data);
-      }
-    };
-
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(recordedChunks, { type: exportMime.split(';')[0] });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `clip-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.${exportExt}`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-
-      exportOverlay.style.display = 'none';
-      exportBtn.disabled = false;
-      previewBtn.disabled = false;
-
-      // Keep UI clean
-      stopPlaybackLoop();
-      playPauseBtn.textContent = '▶';
-    };
-
-    // Keep chunks small to handle memory easily
-    mediaRecorder.start(100);
-
-    // Run the video in real-time
-    if (sourceVideo.paused) {
-      sourceVideo.play();
-      isPlaying = true;
-      playPauseBtn.textContent = '⏸';
-      startPlaybackLoop();
-    }
-
-    // Progress bar monitor
-    const duration = sourceVideo.duration || 1;
-    const outTotal = outputDurationMs() || 1;
-    const progressInterval = setInterval(() => {
-      const pct = Math.min(100, Math.round((toOutputMs(sourceVideo.currentTime * 1000) / outTotal) * 100));
-      exportFill.style.width = pct + '%';
-
-      // Stop the recording when the video naturally finishes
-      if (sourceVideo.ended || sourceVideo.currentTime >= duration) {
-        clearInterval(progressInterval);
-        exportFill.style.width = '100%';
-        exportPercent.textContent = 'Processing file...';
-        if (mediaRecorder.state !== 'inactive') {
-          mediaRecorder.stop();
-        }
-      } else {
-        exportPercent.textContent = pct + '%';
-      }
-    }, 200);
-
-  } catch (err) {
-    console.error('[MCR export] Error:', err);
-    exportOverlay.style.display = 'none';
-    exportBtn.disabled = false;
-    previewBtn.disabled = false;
-    alert('Export error: ' + err.message);
-  }
+  document.getElementById('aspectSelect').value = ASPECTS[cameraOptions.aspect] ? cameraOptions.aspect : 'source';
+  document.getElementById('aspectModeSelect').value = cameraOptions.aspectMode === 'fit' ? 'fit' : 'crop';
+  document.getElementById('aspectModeSelect').disabled = !outputRatio();
 }
 
 // --- Init ---
-// Waits for overlays.js / texts.js / bridge.js, which load after this file
+// Waits for overlays.js / texts.js / export.js / bridge.js, which load after this file
 document.addEventListener('DOMContentLoaded', () => loadData()
   .then(blob => {
     setupDefaultSliders();

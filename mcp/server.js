@@ -495,7 +495,11 @@ server.registerTool('set_camera', {
     'Global camera behaviour. motion: "smooth" | "snappy" (quick, slight overshoot) | "calm" (slow, loose follow). ' +
     'auto_zoom: zoom level chosen from each clicked element\'s size (recommended); zoom_intensity scales it ' +
     '(0.5–2, 1 = default). follow_cursor: pan with the cursor while zoomed. merge_gap_ms: nearby zooms stay ' +
-    'zoomed in between. motion_blur on fast camera moves. frame: inset the recording on a background ' +
+    'zoomed in between. motion_blur on fast camera moves. speed_badge: show the "⏩ N×" tag on speed-ups ' +
+    '(turn off for a seamless marketing cut). aspect: output format — "source" (as recorded), "16:9", ' +
+    '"9:16" (Reels/TikTok/Shorts), "1:1", "4:5"; aspect_mode "crop" fills the format and the camera follows the ' +
+    'action through the narrower window (auto zoom accounts for it; scale-1 shots show the crop, not the whole page), ' +
+    '"fit" shows the whole recording on the frame background. frame: inset the recording on a background ' +
     '(enabled, padding 0–0.2 of the height, radius px@1080, background colour or 2–4 colour gradient, shadow). ' +
     'Long pans while zoomed in automatically pull back mid-way for orientation. Undoable.',
   inputSchema: {
@@ -505,6 +509,9 @@ server.registerTool('set_camera', {
     follow_cursor: z.boolean().optional(),
     merge_gap_ms: z.number().min(0).max(10000).optional(),
     motion_blur: z.boolean().optional(),
+    speed_badge: z.boolean().optional(),
+    aspect: z.enum(['source', '16:9', '9:16', '1:1', '4:5']).optional(),
+    aspect_mode: z.enum(['crop', 'fit']).optional(),
     frame: z.object({
       enabled: z.boolean().optional(),
       padding: z.number().min(0).max(0.2).optional(),
@@ -614,7 +621,8 @@ server.registerTool('remove_text', {
 
 const SEGMENT_HELP =
   'Segments are in SOURCE time (the recording, as get_project/get_frame use it). speed 0 removes the stretch; ' +
-  'speed 2–16 fast-forwards it (a small "⏩ N×" badge is shown while it plays). Zooms and texts stay in sync ' +
+  'speed 2–16 fast-forwards it (a small "⏩ N×" badge is shown while it plays); speed 0.25–0.9 plays it in slow ' +
+  'motion (no badge — use it to linger on a result). Zooms and texts stay in sync ' +
   'automatically. Segments cannot overlap. get_project reports output_duration_sec (final length).';
 
 server.registerTool('find_idle', {
@@ -631,11 +639,11 @@ server.registerTool('find_idle', {
 
 server.registerTool('add_segment', {
   title: 'Cut or speed up a stretch',
-  description: `Removes (speed 0) or fast-forwards (speed 2–16) part of the clip. Undoable. ${SEGMENT_HELP}`,
+  description: `Removes (speed 0), fast-forwards (speed 2–16) or slows down (speed 0.25–0.9) part of the clip. Undoable. ${SEGMENT_HELP}`,
   inputSchema: {
     start_sec: z.number().min(0),
     end_sec: z.number().min(0),
-    speed: z.number().min(0).max(16).describe('0 = cut, otherwise playback speed (e.g. 4, 8)'),
+    speed: z.number().min(0).max(16).describe('0 = cut, 0.25–0.9 = slow motion, otherwise playback speed (e.g. 4, 8)'),
   },
 }, (args) => run(async () => asText(await callEditor('add_segment', args))));
 
@@ -689,8 +697,9 @@ server.registerTool('undo', {
 server.registerTool('export_video', {
   title: 'Export video',
   description:
-    'Starts rendering the final MP4/WebM in the editor (real time — takes as long as the clip). The file is ' +
-    'downloaded by Chrome when done. The editor tab must stay visible. Only do this when the user asks.',
+    'Starts rendering the final MP4 in the editor (frame-exact offline render at 60 fps; falls back to ' +
+    'real-time recording if the browser cannot). The file is downloaded by Chrome when done. Keep the editor ' +
+    'tab open. Only do this when the user asks.',
   inputSchema: {},
 }, () => run(async () => asText(await callEditor('export_video'))));
 

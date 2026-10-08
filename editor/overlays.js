@@ -302,12 +302,12 @@ function boxFill(c, d, bx, by, boxW, boxH) {
 }
 
 // --- Rendering ---
-// view = { W, H, s, tx, ty }: the camera transform used for the video, so
+// view = { W, H, U, vw, vh, s, tx, ty }: the camera transform used for the video, so
 // 'video'-anchored overlays stay glued to the page while zooming.
 
 function toCanvasPoint(o, view) {
   if (o.anchor === 'video') {
-    return { px: view.tx + o.x * view.W * view.s, py: view.ty + o.y * view.H * view.s, k: view.s };
+    return { px: view.tx + o.x * view.vw * view.s, py: view.ty + o.y * view.vh * view.s, k: view.s };
   }
   return { px: o.x * view.W, py: o.y * view.H, k: 1 };
 }
@@ -320,14 +320,14 @@ function drawOverlays(c, tMs, view) {
 }
 
 function drawOverlay(c, o, tMs, view) {
-  const { W, H } = view;
+  const { W, H, U } = view; // U: short side, so vertical output keeps text sizes sane
   const st = TEXT_STYLES[o.style];
   const d = resolveDesign(o);
-  const u = H / 1080; // design px → canvas px
+  const u = U / 1080; // design px → canvas px
   const { k, kIn, elapsed } = overlayProgress(o, tMs);
   if (k <= 0) return;
 
-  const fontPx = (d.fontSize ? d.fontSize * u : H * st.font) * o.size;
+  const fontPx = (d.fontSize ? d.fontSize * u : U * st.font) * o.size;
   const { px, py, k: zoomK } = toCanvasPoint(o, view);
 
   // Typewriter reveals characters during the intro instead of fading
@@ -360,7 +360,7 @@ function drawOverlay(c, o, tMs, view) {
   if (o.style === 'highlight') {
     drawHighlightRing(c, o, view, px, py, zoomK, k);
     if (!lines.length) { c.restore(); return; }
-    const ringH = o.h * H * zoomK;
+    const ringH = o.h * view.vh * zoomK;
     bx = px - boxW / 2;
     by = py - ringH / 2 - boxH - fontPx * 0.5;
     if (by < fontPx * 0.5) by = py + ringH / 2 + fontPx * 0.5;
@@ -379,7 +379,7 @@ function drawOverlay(c, o, tMs, view) {
   if (!lines.length) { c.restore(); return; }
 
   // Keep the box on screen, clear of the frame edge
-  const m = Math.max(fontPx * 0.4, H * 0.03);
+  const m = Math.max(fontPx * 0.4, U * 0.03);
   bx = Math.min(W - boxW - m, Math.max(m, bx));
   by = Math.min(H - boxH - m, Math.max(m, by));
   const cx = bx + boxW / 2, cy = by + boxH / 2;
@@ -396,7 +396,7 @@ function drawOverlay(c, o, tMs, view) {
 
   // Entrance motion: a few pixels, no overshoot. Then the static rotation
   if (o.animation === 'slide-up') {
-    c.translate(0, (1 - k) * H * 0.014);
+    c.translate(0, (1 - k) * U * 0.014);
   } else if (o.animation === 'pop') {
     const s = 0.96 + 0.04 * k;
     c.translate(cx, cy); c.scale(s, s); c.translate(-cx, -cy);
@@ -502,21 +502,21 @@ function drawPointer(c, bx, by, boxW, boxH, px, py, fontPx) {
 }
 
 function drawHighlightRing(c, o, view, px, py, zoomK, k) {
-  const w = o.w * view.W * zoomK, h = o.h * view.H * zoomK;
-  const pad = view.H * 0.006 * zoomK;
+  const w = o.w * view.vw * zoomK, h = o.h * view.vh * zoomK;
+  const pad = view.vh * 0.006 * zoomK;
   c.save();
   // Crisp ring plus a faint wide halo of the same colour: reads on light and dark UI
   c.strokeStyle = o.accent;
   const g = 0.97 + 0.03 * k; // settles in from 97 % size
   const rx = px - (w / 2 + pad) * g, ry = py - (h / 2 + pad) * g;
-  const rw = (w + pad * 2) * g, rh = (h + pad * 2) * g, rr = view.H * 0.008;
+  const rw = (w + pad * 2) * g, rh = (h + pad * 2) * g, rr = view.U * 0.008;
   const alpha = c.globalAlpha;
   c.globalAlpha = alpha * 0.18;
-  c.lineWidth = Math.max(4, view.H * 0.008);
+  c.lineWidth = Math.max(4, view.U * 0.008);
   roundRect(c, rx, ry, rw, rh, rr);
   c.stroke();
   c.globalAlpha = alpha;
-  c.lineWidth = Math.max(2, view.H * 0.0034);
+  c.lineWidth = Math.max(2, view.U * 0.0034);
   roundRect(c, rx, ry, rw, rh, rr);
   c.stroke();
   c.restore();

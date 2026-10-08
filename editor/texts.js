@@ -289,12 +289,12 @@ function bindTextEditor(item, o) {
 
   $('.t-anchor').addEventListener('change', e => {
     // Keep the text where it is on screen when switching anchors
-    const v = lastView || { W: 1, H: 1, s: 1, tx: 0, ty: 0 };
-    const sx = o.anchor === 'video' ? (v.tx + o.x * v.W * v.s) / v.W : o.x;
-    const sy = o.anchor === 'video' ? (v.ty + o.y * v.H * v.s) / v.H : o.y;
+    const v = lastView || { W: 1, H: 1, vw: 1, vh: 1, s: 1, tx: 0, ty: 0 };
+    const sx = o.anchor === 'video' ? (v.tx + o.x * v.vw * v.s) / v.W : o.x;
+    const sy = o.anchor === 'video' ? (v.ty + o.y * v.vh * v.s) / v.H : o.y;
     const to = e.target.checked ? 'video' : 'screen';
-    const x = to === 'video' ? (sx * v.W - v.tx) / (v.s * v.W) : sx;
-    const y = to === 'video' ? (sy * v.H - v.ty) / (v.s * v.H) : sy;
+    const x = to === 'video' ? (sx * v.W - v.tx) / (v.s * v.vw) : sx;
+    const y = to === 'video' ? (sy * v.H - v.ty) / (v.s * v.vh) : sy;
     updateText(o.id, { anchor: to, x, y });
   });
 
@@ -391,8 +391,8 @@ function setupCanvasDrag() {
       const cx = ((ev.clientX - r.left) / r.width) * lastView.W;
       const cy = ((ev.clientY - r.top) / r.height) * lastView.H;
       if (o.anchor === 'video') {
-        o.x = (cx - lastView.tx) / (lastView.s * lastView.W);
-        o.y = (cy - lastView.ty) / (lastView.s * lastView.H);
+        o.x = (cx - lastView.tx) / (lastView.s * lastView.vw);
+        o.y = (cy - lastView.ty) / (lastView.s * lastView.vh);
       } else {
         o.x = cx / lastView.W;
         o.y = cy / lastView.H;

@@ -16,7 +16,7 @@ const CURSOR_DEFAULTS = {
   customImage: null,       // data: URL or SVG markup
   hotspotX: 0,             // 0–1 of the image: where the "tip" is
   hotspotY: 0,
-  clickEffect: 'ripple',
+  clickEffect: 'none',     // opt in per project: ripple / pulse / burst
   effectColor: '#e03c3c',
   effectSize: 70,          // px at 1080p
   pressAnimation: true,    // cursor squashes briefly on each click
@@ -150,8 +150,8 @@ const EFFECT_MS = 550;
 const PRESS_MS = 180;
 
 function drawCursorLayer(c, tMs, view) {
-  const u = view.H / 1080 * view.s; // design px → canvas px, scaled with the zoom
-  const toCanvas = (nx, ny) => [view.tx + nx * view.W * view.s, view.ty + ny * view.H * view.s];
+  const u = view.vh / 1080 * view.s; // design px → canvas px, scaled with the zoom
+  const toCanvas = (nx, ny) => [view.tx + nx * view.vw * view.s, view.ty + ny * view.vh * view.s];
 
   // Click effects first, so the cursor sits on top of them
   if (cursorFx.clickEffect !== 'none') {

@@ -30,7 +30,7 @@ A Chrome extension for recording browser tabs with automatic smooth zoom effects
   size, or turn them off — globally or per click.
 - **Built-in clip editor** — interactive timeline with per-click zoom settings (intensity, ease-in duration, hold time, ease-out duration, and time offset).
 - **Global defaults** — set zoom parameters once and apply them to all clicks at once; they're remembered for next time.
-- **Video export** — renders the final clip with all zoom effects baked in and downloads it as MP4 (WebM fallback).
+- **Video export** — renders the final clip frame by frame at 60 fps (WebCodecs, faster than real time, no dropped frames) with all zoom effects baked in and downloads it as MP4.
 - **Auto-export** — optional: the finished clip downloads as soon as the editor opens, with zero clicks.
 
 ---
@@ -166,13 +166,15 @@ The bridge only listens on `127.0.0.1` and only accepts connections from `chrome
 │   └── popup.css
 ├── editor/
 │   ├── editor.html        # Clip editor page
-│   ├── editor.js          # Canvas renderer + automatic camera + export
+│   ├── editor.js          # Canvas renderer + automatic camera
 │   ├── overlays.js        # Floating text styles + rendering
 │   ├── texts.js           # Texts panel, timeline track, drag to place
 │   ├── segments.js        # Cuts & speed-ups: model, playback, idle detection, timeline bands
 │   ├── cursor.js          # Cursor + click effects drawn in post (arrow, glove, dot, custom)
 │   ├── shots.js           # Director camera shots (wide / close-up overrides)
 │   ├── analysis.js        # Pixel analysis: scene changes, frozen stretches, activity
+│   ├── export.js          # Frame-exact offline export (WebCodecs) + real-time fallback
+│   ├── lib/               # Vendored mediabunny (MPL-2.0): demux / encode / MP4 mux
 │   ├── bridge.js          # WebSocket client for the Claude MCP server
 │   └── editor.css
 ├── mcp/

@@ -158,6 +158,9 @@ function serializeCamera() {
     auto_zoom: cameraOptions.autoZoom,
     zoom_intensity: cameraOptions.zoomIntensity,
     motion_blur: cameraOptions.motionBlur,
+    speed_badge: cameraOptions.speedBadge !== false,
+    aspect: ASPECTS[cameraOptions.aspect] ? cameraOptions.aspect : 'source',
+    aspect_mode: cameraOptions.aspectMode === 'fit' ? 'fit' : 'crop',
     frame: { ...cameraOptions.frame },
   };
 }
@@ -200,7 +203,7 @@ function serializeSegment(sg) {
     start_sec: round(sg.start / 1000),
     end_sec: round(sg.end / 1000),
     speed: sg.speed,
-    kind: sg.speed === 0 ? 'cut' : 'speed-up',
+    kind: sg.speed === 0 ? 'cut' : sg.speed < 1 ? 'slow-motion' : 'speed-up',
   };
 }
 
@@ -321,8 +324,10 @@ const BRIDGE_METHODS = {
     return {
       recording: {
         duration_sec: round(sourceVideo.duration),
-        width: previewCanvas.width,
-        height: previewCanvas.height,
+        width: sourceVideo.videoWidth,
+        height: sourceVideo.videoHeight,
+        output_width: previewCanvas.width,
+        output_height: previewCanvas.height,
         current_time_sec: round(sourceVideo.currentTime),
         cursor_samples: moves.length,
         output_duration_sec: round(outputDurationMs() / 1000),
@@ -409,6 +414,8 @@ const BRIDGE_METHODS = {
 
   async set_camera(p) {
     if (p.motion !== undefined && !MOTION_PRESETS[p.motion]) throw new Error(`motion must be one of ${Object.keys(MOTION_PRESETS).join(', ')}`);
+    if (p.aspect !== undefined && !(p.aspect in ASPECTS)) throw new Error(`aspect must be one of ${Object.keys(ASPECTS).join(', ')}`);
+    if (p.aspect_mode !== undefined && !['crop', 'fit'].includes(p.aspect_mode)) throw new Error('aspect_mode must be crop or fit');
     const f = p.frame || {};
     if (f.background !== undefined) {
       const bg = f.background;
@@ -422,6 +429,9 @@ const BRIDGE_METHODS = {
     if (p.auto_zoom !== undefined) cameraOptions.autoZoom = !!p.auto_zoom;
     if (p.zoom_intensity !== undefined) cameraOptions.zoomIntensity = Math.min(2, Math.max(0.5, p.zoom_intensity));
     if (p.motion_blur !== undefined) cameraOptions.motionBlur = !!p.motion_blur;
+    if (p.speed_badge !== undefined) cameraOptions.speedBadge = !!p.speed_badge;
+    if (p.aspect !== undefined) cameraOptions.aspect = p.aspect;
+    if (p.aspect_mode !== undefined) cameraOptions.aspectMode = p.aspect_mode;
     const fr = cameraOptions.frame;
     if (f.enabled !== undefined) fr.enabled = !!f.enabled;
     if (f.padding !== undefined) fr.padding = Math.min(0.2, Math.max(0, f.padding));

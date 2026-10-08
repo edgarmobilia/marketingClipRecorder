@@ -8,7 +8,7 @@
 //
 // segment: { id, start, end, speed }   // ms in source time
 
-const SPEED_CHOICES = [0, 2, 4, 8, 16]; // 0 = cut
+const SPEED_CHOICES = [0, 0.5, 2, 4, 8, 16]; // 0 = cut, 0.5 = slow motion
 const MIN_SEGMENT_MS = 200;
 const DEFAULT_SEGMENT_MS = 3000;
 
@@ -33,7 +33,10 @@ function normalizeSegment(sg) {
   sg.end = Math.min(durMs, Math.round(Number(sg.end) || 0));
   if (sg.end - sg.start < MIN_SEGMENT_MS) sg.end = Math.min(durMs, sg.start + MIN_SEGMENT_MS);
   const sp = Number(sg.speed);
-  sg.speed = sp === 0 ? 0 : Math.min(16, Math.max(1.25, sp || 4));
+  // 0 = cut, 0.25–0.9 = slow motion, 1.25–16 = fast-forward (1× would be a no-op)
+  if (sp === 0) sg.speed = 0;
+  else if (sp > 0 && sp < 1) sg.speed = Math.max(0.25, Math.min(0.9, sp));
+  else sg.speed = Math.min(16, Math.max(1.25, sp || 4));
   return sg;
 }
 
@@ -108,6 +111,24 @@ function toOutputMs(srcMs) {
   return out;
 }
 
+// Time in the exported video → source time, in ms (inverse of toOutputMs)
+function fromOutputMs(outMs) {
+  let acc = 0;      // output time used up to prevEnd
+  let prevEnd = 0;  // source time where the current 1× stretch begins
+  for (const sg of segments) {
+    const plain = sg.start - prevEnd;
+    if (outMs < acc + plain) return prevEnd + (outMs - acc);
+    acc += plain;
+    if (sg.speed > 0) {
+      const len = (sg.end - sg.start) / sg.speed;
+      if (outMs < acc + len) return sg.start + (outMs - acc) * sg.speed;
+      acc += len;
+    }
+    prevEnd = sg.end;
+  }
+  return prevEnd + (outMs - acc);
+}
+
 // --- Idle detection ---
 // Stretches with no clicks/typing and an (almost) still cursor are usually
 // waiting time: loading, rendering, thinking. Margins keep a little context.
@@ -170,10 +191,11 @@ function resetPlaybackRate() {
 // Small "⏩ 8×" badge drawn into the frame while a speed-up plays
 function drawSpeedBadge(c, timeSec, view) {
   const tMs = timeSec * 1000;
-  const sg = segments.find(s => s.speed > 0 && tMs >= s.start && tMs < s.end);
+  // Slow motion is a stylistic choice, not a skip — no badge for it
+  const sg = segments.find(s => s.speed > 1 && tMs >= s.start && tMs < s.end);
   if (!sg) return;
-  const { W, H } = view;
-  const fs = H * 0.03;
+  const { W, U } = view;
+  const fs = U * 0.03;
   c.save();
   c.font = `700 ${fs}px ${FONT_STACK}`;
   c.textBaseline = 'middle';
@@ -235,13 +257,14 @@ function renderSegmentList() {
     const item = document.createElement('div');
     item.className = 'event-row' + (selected ? ' active' : '');
     const len = (sg.end - sg.start) / 1000;
+    const slow = sg.speed > 0 && sg.speed < 1;
     const saved = sg.speed === 0 ? len : len - len / sg.speed;
     item.innerHTML = `
       <div class="event-head">
-        <span class="event-icon">${sg.speed === 0 ? '✂' : '⏩'}</span>
+        <span class="event-icon">${sg.speed === 0 ? '✂' : slow ? '🐢' : '⏩'}</span>
         <div class="event-main">
-          <div class="event-title">${sg.speed === 0 ? 'Cut' : `Speed up ${sg.speed}×`} · ${fmtTime(sg.start / 1000)} – ${fmtTime(sg.end / 1000)}</div>
-          <div class="event-sub">${len.toFixed(1)} s → saves ${saved.toFixed(1)} s</div>
+          <div class="event-title">${sg.speed === 0 ? 'Cut' : slow ? `Slow motion ${sg.speed}×` : `Speed up ${sg.speed}×`} · ${fmtTime(sg.start / 1000)} – ${fmtTime(sg.end / 1000)}</div>
+          <div class="event-sub">${len.toFixed(1)} s → ${slow ? `adds ${(-saved).toFixed(1)}` : `saves ${saved.toFixed(1)}`} s</div>
         </div>
       </div>
       ${selected ? `
