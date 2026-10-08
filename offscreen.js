@@ -86,28 +86,32 @@ function bitrateFor(width, height, fps) {
 
 let screencast = null; // { port, track, write, canvas, ctx, seq, drawn }
 
+// The recorder only encodes frames it is handed; a page that sits still sends
+// no screencast frames, so the last one is re-sent at this pace to keep the
+// video track alive (an encoder that never gets a frame writes no video at all)
+const KEEPALIVE_MS = 100;
+
 function createScreencastTrack(size) {
-  const canvas = new OffscreenCanvas(size.width, size.height);
+  // A captured <canvas> (as in experiments/screencast.js) — the insertable-
+  // stream track produced recordings with no video track
+  const canvas = document.createElement('canvas');
+  canvas.width = size.width;
+  canvas.height = size.height;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, size.width, size.height);
 
-  // Insertable-stream track when available; otherwise a captured canvas
-  if (typeof MediaStreamTrackGenerator === 'function') {
-    const track = new MediaStreamTrackGenerator({ kind: 'video' });
-    const writer = track.writable.getWriter();
-    const write = () => {
-      const frame = new VideoFrame(canvas, { timestamp: Math.round(performance.now() * 1000) });
-      writer.write(frame).catch(() => {}).finally(() => frame.close());
-    };
-    return { canvas, ctx, track, write, stop: () => writer.close().catch(() => {}) };
-  }
-  const el = document.createElement('canvas');
-  el.width = size.width;
-  el.height = size.height;
-  const elCtx = el.getContext('2d');
-  const track = el.captureStream(CAPTURE_FPS).getVideoTracks()[0];
-  return { canvas, ctx, track, write: () => elCtx.drawImage(canvas, 0, 0), stop: () => {} };
+  // Frame rate 0: a frame is captured exactly when requestFrame() is called
+  const track = canvas.captureStream(0).getVideoTracks()[0];
+  let lastWrite = 0;
+  const write = () => {
+    lastWrite = performance.now();
+    track.requestFrame();
+  };
+  const keepalive = setInterval(() => {
+    if (performance.now() - lastWrite >= KEEPALIVE_MS) write();
+  }, KEEPALIVE_MS / 2);
+  return { canvas, ctx, track, write, stop: () => clearInterval(keepalive) };
 }
 
 function startScreencastInput(size) {

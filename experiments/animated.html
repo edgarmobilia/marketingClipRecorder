@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Screencast test: constant motion</title>
+  <style>
+    body { margin: 0; background: #f4f4f5; font: 16px -apple-system, 'Segoe UI', sans-serif; color: #111113; }
+    #bar { position: fixed; top: 0; left: 0; height: 100vh; width: 6px; background: #3e63dd; }
+    #clock { position: fixed; top: 24px; right: 32px; font: 600 48px ui-monospace, Consolas, monospace; }
+    #clockLabel { position: fixed; top: 84px; right: 32px; font-size: 12px; color: #71717a; }
+    main { padding: 120px 64px; max-width: 900px; }
+    a { color: #3e63dd; display: inline-block; margin: 0 16px 16px 0; padding: 8px 12px; border: 1px solid #d4d4d8; border-radius: 6px; text-decoration: none; }
+    a:hover { background: #e4e4e7; }
+  </style>
+</head>
+<body>
+  <div id="bar"></div>
+  <div id="clock">0.000</div>
+  <div id="clockLabel">seconds since this page opened — always running, it is not the capture timer</div>
+  <main>
+    <h1>Constant motion test page</h1>
+    <p>The blue bar sweeps across the page and the clock updates on every animation frame, so the page repaints
+      ~60 times a second. Screencast frame gaps here show the capture's real capacity, not idle time.
+      The clock also tells you exactly which moment each captured frame shows.</p>
+    <p>Hover the links (hand cursor), select text, click around.</p>
+    <p>
+      <a href="#a">Link one</a><a href="#b">Link two</a><a href="#c">Link three</a>
+      <a href="#d">Link four</a><a href="#e">Link five</a><a href="#f">Link six</a>
+    </p>
+    <p><button>A button</button> <input placeholder="A text field"></p>
+  </main>
+  <!-- Extension pages forbid inline scripts (CSP script-src 'self') -->
+  <script src="animated.js"></script>
+</body>
+</html>

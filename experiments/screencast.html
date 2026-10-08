@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Screencast prototype</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px 24px 40px; background: #1a1a1f; color: #e0e0e8;
+      font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p.lead { margin: 0 0 16px; color: #a0a0b0; max-width: 760px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    select, input, button { font: inherit; color: inherit; background: #26262d; border: 1px solid #3a3a44;
+      border-radius: 6px; padding: 6px 10px; }
+    select { min-width: 320px; }
+    input[type=number] { width: 70px; }
+    button { cursor: pointer; background: #3e63dd; border-color: #3e63dd; color: #fff; font-weight: 600; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { color: #a0a0b0; min-height: 20px; margin-bottom: 12px; }
+    table { border-collapse: collapse; margin-bottom: 16px; }
+    td { padding: 3px 16px 3px 0; }
+    td:first-child { color: #a0a0b0; }
+    .strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 8px; margin-bottom: 16px; }
+    .strip figure { margin: 0; }
+    .strip img { width: 100%; display: block; border-radius: 4px; background: #000; }
+    .strip figcaption { color: #a0a0b0; font-size: 12px; padding-top: 2px; }
+    video { max-width: 100%; border-radius: 6px; background: #000; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Cursor-free capture prototype (chrome.debugger · Page.startScreencast)</h1>
+  <p class="lead">
+    Pick a tab, press Start: the tab comes to the front and frames are captured for the chosen time.
+    <b>Move the mouse over the page, hover links and buttons, and click a few things</b>, then come back here.
+    The results show whether the frames contain the system cursor, the real frame rate and the gaps between frames.
+    Chrome shows a "started debugging this browser" bar while it runs — that is expected.
+  </p>
+
+  <div class="row">
+    <select id="tab"></select>
+    <button id="refresh" type="button" style="background:#26262d;border-color:#3a3a44">↻</button>
+  </div>
+  <div class="row">
+    <label>Seconds <input id="seconds" type="number" min="2" max="30" value="8"></label>
+    <label>Format
+      <select id="format" style="min-width:0">
+        <option value="jpeg">JPEG</option>
+        <option value="png">PNG</option>
+      </select>
+    </label>
+    <label>Quality <input id="quality" type="number" min="30" max="100" value="90"></label>
+    <label>Scale
+      <select id="scale" style="min-width:0">
+        <option value="1">100 %</option>
+        <option value="0.75">75 %</option>
+        <option value="0.5">50 %</option>
+      </select>
+    </label>
+    <button id="openTest" type="button" style="background:#26262d;border-color:#3a3a44">Open motion test page</button>
+    <button id="start" type="button">Start</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="results" class="hidden">
+    <table id="stats"></table>
+    <div class="strip" id="strip"></div>
+    <div class="row">
+      <button id="rebuild" type="button">Rebuild as WebM (real time)</button>
+      <a id="download" class="hidden" download="screencast.webm">Download WebM</a>
+    </div>
+    <video id="video" class="hidden" controls></video>
+  </div>
+
+  <script src="screencast.js"></script>
+</body>
+</html>

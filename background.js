@@ -192,6 +192,9 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'screencast') return;
   screencastPort = port;
   port.onDisconnect.addListener(() => { if (screencastPort === port) screencastPort = null; });
+  // Frames sent before the recorder connected were dropped, and a still page
+  // sends no more: restarting the screencast delivers the current frame now
+  startScreencastFrames();
 });
 
 async function attachScreencast(tabId) {
