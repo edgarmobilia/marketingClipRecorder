@@ -3,6 +3,7 @@
 const MSG = {
   INIT_RECORDING:   'INIT_RECORDING',
   STOP_RECORDING:   'STOP_RECORDING',
+  RECORDER_STARTED: 'RECORDER_STARTED',
   RECORDING_READY:  'RECORDING_READY',
   RECORDING_ERROR:  'RECORDING_ERROR',
 };
@@ -11,6 +12,7 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let stream = null;
 let requestDataInterval = null;
+let startDelayTimer = null;
 let currentMimeType = 'video/webm';
 
 const MIME_TYPES = [
@@ -52,10 +54,44 @@ async function saveToIndexedDB(blob) {
 
 // --- Recording ---
 
-async function startRecording(streamId, config) {
+// --- Quality ---
+// Capture at the tab's physical pixel size (CSS size × devicePixelRatio) so
+// text stays sharp on scaled displays and when the editor zooms in, capped at 4K.
+const MAX_CAPTURE_W = 3840;
+const MAX_CAPTURE_H = 2160;
+const CAPTURE_FPS = 60;
+// Screen content needs far more than MediaRecorder's ~2.5 Mbps default to keep
+// text crisp during scrolling; scale with pixel count, within sane bounds
+const BITS_PER_PIXEL = 0.15;
+const MIN_BITRATE = 8_000_000;
+const MAX_BITRATE = 60_000_000;
+
+function captureSize(viewport) {
+  if (!viewport) return { width: 1920, height: 1080 };
+  const dpr = Math.max(1, viewport.dpr || 1);
+  const k = Math.min(1, MAX_CAPTURE_W / (viewport.width * dpr), MAX_CAPTURE_H / (viewport.height * dpr));
+  // Encoders want even dimensions
+  const even = v => Math.max(2, Math.round(v / 2) * 2);
+  return { width: even(viewport.width * dpr * k), height: even(viewport.height * dpr * k) };
+}
+
+function bitrateFor(width, height, fps) {
+  return Math.round(Math.min(MAX_BITRATE, Math.max(MIN_BITRATE, width * height * fps * BITS_PER_PIXEL)));
+}
+
+async function startRecording(streamId, config, delayMs = 0, viewport = null) {
   try {
+    const size = captureSize(viewport);
     const constraints = {
-      video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
+      video: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId,
+          maxWidth: size.width,
+          maxHeight: size.height,
+          maxFrameRate: CAPTURE_FPS,
+        },
+      },
     };
     if (config.audioCaptureEnabled) {
       constraints.audio = { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } };
@@ -65,7 +101,18 @@ async function startRecording(streamId, config) {
     currentMimeType = getSupportedMimeType();
     recordedChunks = [];
 
-    mediaRecorder = new MediaRecorder(stream, { mimeType: currentMimeType });
+    const settings = stream.getVideoTracks()[0].getSettings();
+    const width = settings.width || size.width;
+    const height = settings.height || size.height;
+    const videoBitsPerSecond = bitrateFor(width, height, CAPTURE_FPS);
+    console.log(`[MCR Offscreen] Capturing ${width}x${height} @ ${settings.frameRate || CAPTURE_FPS}fps, ` +
+      `${(videoBitsPerSecond / 1e6).toFixed(1)} Mbps, ${currentMimeType}`);
+
+    mediaRecorder = new MediaRecorder(stream, {
+      mimeType: currentMimeType,
+      videoBitsPerSecond,
+      audioBitsPerSecond: 192_000,
+    });
 
     mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) recordedChunks.push(e.data);
@@ -87,6 +134,16 @@ async function startRecording(streamId, config) {
       cleanup();
     };
 
+    // Reports the real start so click timestamps can be aligned to the video
+    mediaRecorder.onstart = () => {
+      chrome.runtime.sendMessage({ type: MSG.RECORDER_STARTED, at: Date.now() });
+    };
+
+    // Stream is acquired up front; recording itself waits out the countdown
+    await new Promise(r => { startDelayTimer = setTimeout(r, delayMs); });
+    startDelayTimer = null;
+    if (!mediaRecorder) return; // stopped during countdown
+
     mediaRecorder.start();
     requestDataInterval = setInterval(() => {
       if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.requestData();
@@ -100,6 +157,8 @@ async function startRecording(streamId, config) {
 }
 
 function stopRecording() {
+  clearTimeout(startDelayTimer);
+  startDelayTimer = null;
   clearInterval(requestDataInterval);
   requestDataInterval = null;
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
@@ -120,8 +179,11 @@ function cleanup() {
 // --- Messages ---
 
 chrome.runtime.onMessage.addListener((message) => {
+  // Popup and other pages broadcast STOP_RECORDING too; only obey the
+  // background so it can collect the last events before the recorder stops
+  if (message.target !== 'offscreen') return;
   if (message.type === MSG.INIT_RECORDING) {
-    startRecording(message.streamId, message.config);
+    startRecording(message.streamId, message.config, message.delayMs, message.viewport);
   } else if (message.type === MSG.STOP_RECORDING) {
     stopRecording();
   }

@@ -1,0 +1,21 @@
+{
+  "name": "mcr-clip-editor-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP server that lets Claude inspect and edit clips in the Marketing Clip Recorder editor",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "mcr-clip-editor-mcp": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test-bridge.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  }
+}

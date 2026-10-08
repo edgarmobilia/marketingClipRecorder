@@ -19,14 +19,21 @@
     <span class="btn-icon" id="btnIcon">⏺</span>
     <span id="btnLabel">Record</span>
   </button>
-  <div class="shortcut-hint" id="shortcutHint" style="text-align:center; font-size:12px; color:#aaa; margin-top:8px;">
-    Shortcut: <b>Alt + S</b> to stop recording
+  <div class="shortcut-hint">
+    <b>Alt + S</b> starts / stops recording from any tab
   </div>
 
-
   <div class="control-row checkbox-row">
-    <label>Visual click indicator (red dot)</label>
-    <input type="checkbox" id="clickIndicator">
+    <label for="countdown">3-2-1 countdown before recording</label>
+    <input type="checkbox" id="countdown">
+  </div>
+  <div class="control-row checkbox-row">
+    <label for="audioCaptureEnabled">Record tab audio</label>
+    <input type="checkbox" id="audioCaptureEnabled">
+  </div>
+  <div class="control-row checkbox-row">
+    <label for="autoExport">Export automatically when finished</label>
+    <input type="checkbox" id="autoExport">
   </div>
 
   <div class="status-msg" id="statusMsg"></div>

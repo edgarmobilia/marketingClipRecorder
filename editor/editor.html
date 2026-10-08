@@ -12,6 +12,7 @@
         <div class="logo-dot"></div>
         <span>Clip Editor</span>
       </div>
+      <span class="claude-status" id="claudeStatus" title="Start Claude Code in the project folder to let Claude edit this clip">Claude: offline</span>
     </div>
     <div class="toolbar-right">
       <button id="previewBtn" class="btn">▶ Preview</button>
@@ -29,44 +30,95 @@
       </div>
     </div>
 
-    <!-- Sidebar: click list -->
+    <!-- Sidebar -->
     <div class="sidebar">
-      <div class="sidebar-header">
-        Recorded clicks <span class="badge" id="clickCount">0</span>
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab active" data-tab="events">Zooms <span class="badge" id="clickCount">0</span></button>
+        <button class="sidebar-tab" data-tab="texts">Texts <span class="badge" id="textCount">0</span></button>
+        <button class="sidebar-tab" data-tab="cuts">Cuts <span class="badge" id="segmentCount">0</span></button>
+        <button class="sidebar-tab" data-tab="cursor">Cursor</button>
       </div>
-      <div class="sidebar-hint" id="sidebarHint">
-        No clicks recorded. Record while navigating your app and click on the elements you want to highlight.
-      </div>
-      <div id="clickList" class="click-list"></div>
 
-      <div class="global-settings">
-        <div class="settings-title">Defaults</div>
-        <div class="setting-row">
-          <label>Zoom</label>
-          <input type="range" id="defaultZoom" min="1.5" max="4" step="0.1" value="2.0">
-          <span class="setting-val" id="defaultZoomVal">2.0×</span>
+      <!-- Events: clicks / typing + zoom settings -->
+      <div class="tab-panel" id="panel-events">
+        <div class="panel-section">
+          <div class="field-label">Zoom style</div>
+          <div class="chips" id="zoomPresets"></div>
+          <label class="switch-row">
+            <span>Follow the cursor</span>
+            <span class="switch"><input type="checkbox" id="followCursor"><span></span></span>
+          </label>
         </div>
-        <div class="setting-row">
-          <label>Ease in</label>
-          <input type="range" id="defaultZoomIn" min="100" max="5000" step="50" value="150">
-          <span class="setting-val" id="defaultZoomInVal">150ms</span>
+
+        <div class="sidebar-hint" id="sidebarHint">
+          No clicks recorded. Record while navigating your app — every click and every text field you type in gets an automatic zoom.
         </div>
-        <div class="setting-row">
-          <label>Hold</label>
-          <input type="range" id="defaultHold" min="300" max="4000" step="100" value="600">
-          <span class="setting-val" id="defaultHoldVal">600ms</span>
+        <div id="clickList" class="click-list"></div>
+
+        <details class="global-settings advanced">
+          <summary>Advanced</summary>
+          <div class="settings-title">Defaults for every zoom</div>
+          <div class="setting-row">
+            <label>Zoom</label>
+            <input type="range" id="defaultZoom" min="1.1" max="3" step="0.1" value="1.8">
+            <span class="setting-val" id="defaultZoomVal">1.8×</span>
+          </div>
+          <div class="setting-row">
+            <label>Ease in</label>
+            <input type="range" id="defaultZoomIn" min="100" max="3000" step="50" value="500">
+            <span class="setting-val" id="defaultZoomInVal">500ms</span>
+          </div>
+          <div class="setting-row">
+            <label>Hold</label>
+            <input type="range" id="defaultHold" min="0" max="4000" step="100" value="1200">
+            <span class="setting-val" id="defaultHoldVal">1200ms</span>
+          </div>
+          <div class="setting-row">
+            <label>Ease out</label>
+            <input type="range" id="defaultZoomOut" min="100" max="3000" step="50" value="600">
+            <span class="setting-val" id="defaultZoomOutVal">600ms</span>
+          </div>
+          <div class="setting-row">
+            <label>Offset</label>
+            <input type="range" id="defaultOffset" min="-500" max="500" step="50" value="0">
+            <span class="setting-val" id="defaultOffsetVal">0ms</span>
+          </div>
+          <button id="applyDefaultsBtn" class="btn btn-sm">Apply to all</button>
+          <div class="setting-row merge-row">
+            <label for="mergeGap" title="Zooms closer than this stay zoomed in between">Merge</label>
+            <input type="range" id="mergeGap" min="0" max="4000" step="100" value="1200">
+            <span class="setting-val" id="mergeGapVal">1200ms</span>
+          </div>
+        </details>
+      </div>
+
+      <!-- Texts: floating overlays -->
+      <div class="tab-panel hidden" id="panel-texts">
+        <div class="panel-section">
+          <div class="field-label">Add text at the playhead</div>
+          <div class="chips" id="addTextChips"></div>
         </div>
-        <div class="setting-row">
-          <label>Ease out</label>
-          <input type="range" id="defaultZoomOut" min="100" max="5000" step="50" value="250">
-          <span class="setting-val" id="defaultZoomOutVal">250ms</span>
+        <div id="textList" class="click-list"></div>
+      </div>
+
+      <!-- Cursor & click effects, drawn in post -->
+      <div class="tab-panel hidden" id="panel-cursor">
+        <div class="panel-section" id="cursorPanel"></div>
+        <input type="file" id="cursorUpload" accept="image/png,image/svg+xml,image/webp,image/gif,image/jpeg" hidden>
+      </div>
+
+      <!-- Cuts: remove or speed up stretches -->
+      <div class="tab-panel hidden" id="panel-cuts">
+        <div class="panel-section">
+          <div class="field-label" id="segmentsSummary">Remove or speed up the boring parts — waits, loading, typing.</div>
+          <button id="autoIdleBtn" class="btn btn-sm btn-primary">⚡ Speed up idle parts automatically</button>
+          <div class="chips">
+            <button id="cutHereBtn" class="chip">✂ Cut here</button>
+            <button id="speedHereBtn" class="chip">⏩ Speed up here</button>
+          </div>
+          <div class="text-hint" id="segmentsHint"></div>
         </div>
-        <div class="setting-row">
-          <label>Offset</label>
-          <input type="range" id="defaultOffset" min="-500" max="500" step="50" value="0">
-          <span class="setting-val" id="defaultOffsetVal">0ms</span>
-        </div>
-        <button id="applyDefaultsBtn" class="btn btn-sm">Apply to all</button>
+        <div id="segmentList" class="click-list"></div>
       </div>
     </div>
   </div>
@@ -80,13 +132,17 @@
         <span id="currentTime">0:00.0</span>
         <span class="time-sep">/</span>
         <span id="totalTime">0:00.0</span>
+        <span class="final-time" id="finalTime"></span>
       </span>
     </div>
     <div class="timeline" id="timeline">
       <div class="timeline-bg" id="timelineBg">
         <div class="timeline-played" id="timelinePlayed"></div>
       </div>
+      <!-- Behind the click markers so those stay draggable -->
+      <div class="segment-markers" id="segmentMarkers"></div>
       <div class="click-markers" id="clickMarkers"></div>
+      <div class="text-markers" id="textMarkers"></div>
     </div>
   </div>
 
@@ -102,6 +158,13 @@
     </div>
   </div>
 
+  <script src="overlays.js"></script>
   <script src="editor.js"></script>
+  <script src="texts.js"></script>
+  <script src="segments.js"></script>
+  <script src="cursor.js"></script>
+  <script src="shots.js"></script>
+  <script src="analysis.js"></script>
+  <script src="bridge.js"></script>
 </body>
 </html>

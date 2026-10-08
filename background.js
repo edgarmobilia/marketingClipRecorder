@@ -4,36 +4,117 @@ const MSG = {
   START_RECORDING:   'START_RECORDING',
   STOP_RECORDING:    'STOP_RECORDING',
   INIT_RECORDING:    'INIT_RECORDING',
+  RECORDER_STARTED:  'RECORDER_STARTED',
   RECORDING_STARTED: 'RECORDING_STARTED',
   RECORDING_STOPPED: 'RECORDING_STOPPED',
   RECORDING_READY:   'RECORDING_READY',
   RECORDING_ERROR:   'RECORDING_ERROR',
   CONFIG_UPDATED:    'CONFIG_UPDATED',
   GET_STATE:         'GET_STATE',
-  GET_CLICKS:        'GET_CLICKS',
+  EVENTS_LOGGED:     'EVENTS_LOGGED',
+  CONTENT_READY:     'CONTENT_READY',
 };
+
+// Single source of truth for recording options (popup and shortcut both use it)
+const DEFAULT_CONFIG = {
+  audioCaptureEnabled: true,
+  countdown: true,
+  autoExport: false,
+};
+
+const COUNTDOWN_SECONDS = 3;
 
 // --- State (persisted to session storage to survive SW suspension) ---
 let recordingTabId = null;
 let isRecording = false;
 let recordingStartTime = null;
+let recordingConfig = null;
+
+const STATE_KEYS = ['recordingTabId', 'isRecording', 'recordingStartTime', 'recordingConfig'];
 
 async function loadState() {
-  const data = await chrome.storage.session.get(['recordingTabId', 'isRecording', 'recordingStartTime']);
+  const data = await chrome.storage.session.get(STATE_KEYS);
   recordingTabId = data.recordingTabId || null;
   isRecording = data.isRecording || false;
   recordingStartTime = data.recordingStartTime || null;
+  recordingConfig = data.recordingConfig || null;
 }
 
 async function saveState() {
-  await chrome.storage.session.set({ recordingTabId, isRecording, recordingStartTime });
+  await chrome.storage.session.set({ recordingTabId, isRecording, recordingStartTime, recordingConfig });
 }
 
 async function clearState() {
   recordingTabId = null;
   isRecording = false;
   recordingStartTime = null;
-  await chrome.storage.session.remove(['recordingTabId', 'isRecording', 'recordingStartTime']);
+  recordingConfig = null;
+  await chrome.storage.session.remove(STATE_KEYS);
+}
+
+async function getStoredConfig() {
+  const { mcrConfig } = await chrome.storage.sync.get('mcrConfig');
+  return Object.assign({}, DEFAULT_CONFIG, mcrConfig);
+}
+
+// --- Event log (clicks, typing, cursor moves) ---
+// Stored in numbered chunks so each write stays small no matter how long the
+// recording is. Writes are serialized so rapid batches are never lost.
+
+let eventWriteChain = Promise.resolve();
+
+function appendEvents(events) {
+  eventWriteChain = eventWriteChain.then(async () => {
+    const { mcrEventChunks = 0 } = await chrome.storage.session.get('mcrEventChunks');
+    await chrome.storage.session.set({
+      [`mcrEvents:${mcrEventChunks}`]: events,
+      mcrEventChunks: mcrEventChunks + 1,
+    });
+  }).catch(err => console.error('[MCR] appendEvents error:', err));
+  return eventWriteChain;
+}
+
+async function readAllEvents() {
+  await eventWriteChain;
+  const { mcrEventChunks = 0 } = await chrome.storage.session.get('mcrEventChunks');
+  const keys = Array.from({ length: mcrEventChunks }, (_, i) => `mcrEvents:${i}`);
+  const data = keys.length ? await chrome.storage.session.get(keys) : {};
+  return keys.flatMap(k => data[k] || []);
+}
+
+async function resetEvents() {
+  await eventWriteChain;
+  const { mcrEventChunks = 0 } = await chrome.storage.session.get('mcrEventChunks');
+  const keys = Array.from({ length: mcrEventChunks }, (_, i) => `mcrEvents:${i}`);
+  await chrome.storage.session.remove([...keys, 'mcrEventChunks', 'mcrVideoStartAt']);
+}
+
+// --- Toolbar badge (countdown / REC) ---
+// The badge lives outside the tab, so it never shows up in the recording.
+
+let countdownTimers = [];
+
+function setBadge(text, color) {
+  chrome.action.setBadgeText({ text });
+  if (color) chrome.action.setBadgeBackgroundColor({ color });
+}
+
+function runBadgeCountdown(seconds) {
+  clearCountdown();
+  for (let i = 0; i < seconds; i++) {
+    countdownTimers.push(setTimeout(() => setBadge(String(seconds - i), '#f0a020'), i * 1000));
+  }
+  countdownTimers.push(setTimeout(() => setBadge('REC', '#e03c3c'), seconds * 1000));
+}
+
+function clearCountdown() {
+  countdownTimers.forEach(clearTimeout);
+  countdownTimers = [];
+}
+
+function flashBadgeError() {
+  setBadge('ERR', '#888');
+  setTimeout(() => setBadge(''), 2500);
 }
 
 // --- Offscreen document ---
@@ -62,8 +143,22 @@ async function ensureContentScript(tabId) {
   try {
     await chrome.tabs.sendMessage(tabId, { type: 'PING' });
   } catch (e) {
-    // Content script not running — inject it now
-await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    // Page was loaded before the extension — inject into every frame now
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content.js'] });
+  }
+}
+
+// Tab's CSS size and pixel ratio, so the capture can match its physical resolution
+async function getViewport(tabId) {
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({ width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio }),
+    });
+    return result;
+  } catch (e) {
+    console.warn('[MCR] Could not read viewport size:', e.message);
+    return null;
   }
 }
 
@@ -77,21 +172,22 @@ async function sendToContentScript(tabId, message) {
 }
 
 function sendToOffscreen(message) {
-  return chrome.runtime.sendMessage(message);
+  return chrome.runtime.sendMessage({ ...message, target: 'offscreen' });
 }
 
 // --- Start recording ---
 
-async function startRecording(config, sendResponse) {
+async function startRecording(config) {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab) { sendResponse({ error: 'No active tab found.' }); return; }
-    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-      sendResponse({ error: 'Cannot record Chrome system pages.' }); return;
+    if (!tab) throw new Error('No active tab found.');
+    if (!tab.url || /^(chrome|chrome-extension|edge|about):/.test(tab.url)) {
+      throw new Error('Cannot record browser system pages.');
     }
 
     await ensureOffscreenDocument();
     await ensureContentScript(tab.id);
+    await resetEvents();
 
     const streamId = await new Promise((resolve, reject) => {
       chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, (id) => {
@@ -100,12 +196,19 @@ async function startRecording(config, sendResponse) {
       });
     });
 
+    const delayMs = config.countdown ? COUNTDOWN_SECONDS * 1000 : 0;
+
     recordingTabId = tab.id;
     isRecording = true;
-    recordingStartTime = Date.now();
+    recordingStartTime = Date.now() + delayMs;
+    recordingConfig = config;
     await saveState();
 
-    await sendToOffscreen({ type: MSG.INIT_RECORDING, streamId, config });
+    if (delayMs) runBadgeCountdown(COUNTDOWN_SECONDS);
+    else setBadge('REC', '#e03c3c');
+
+    const viewport = await getViewport(tab.id);
+    await sendToOffscreen({ type: MSG.INIT_RECORDING, streamId, config, delayMs, viewport });
 
     await sendToContentScript(tab.id, {
       type: MSG.RECORDING_STARTED,
@@ -113,61 +216,81 @@ async function startRecording(config, sendResponse) {
       startTime: recordingStartTime,
     });
 
-    sendResponse({ ok: true });
+    return { ok: true, startTime: recordingStartTime };
   } catch (err) {
     console.error('[MCR] startRecording error:', err);
+    clearCountdown();
+    setBadge('');
     await closeOffscreenDocument();
     await clearState();
-    sendResponse({ error: err.message });
+    return { error: err.message };
   }
 }
 
 // --- Stop recording ---
 
-async function stopRecording(sendResponse) {
+async function stopRecording() {
   try {
     const tabId = recordingTabId;
+    clearCountdown();
+    setBadge('');
 
+    // Content script hands back whatever events it had not flushed yet
+    if (tabId) {
+      const resp = await sendToContentScript(tabId, { type: MSG.RECORDING_STOPPED });
+      if (resp?.events?.length) appendEvents(resp.events);
+    }
     await sendToOffscreen({ type: MSG.STOP_RECORDING });
-    await sendToContentScript(tabId, { type: MSG.RECORDING_STOPPED });
-
-    // Preserve tabId separately so RECORDING_READY can still fetch clicks
-    await chrome.storage.session.set({ mcrPendingTabId: tabId });
     await clearState();
-
-    if (sendResponse) sendResponse({ ok: true });
+    return { ok: true };
   } catch (err) {
     console.error('[MCR] stopRecording error:', err);
     await clearState();
-    if (sendResponse) sendResponse({ error: err.message });
+    return { error: err.message };
   }
+}
+
+async function toggleRecording() {
+  await loadState();
+  const resp = isRecording ? await stopRecording() : await startRecording(await getStoredConfig());
+  if (resp.error) flashBadgeError();
+  return resp;
 }
 
 // --- Open editor after recording is ready ---
 
-async function openEditor(mimeType, ext, tabId) {
-  // Collect click log from the content script
-  let clicks = [];
-  if (tabId) {
-    const resp = await sendToContentScript(tabId, { type: MSG.GET_CLICKS });
-    if (resp && resp.clicks) clicks = resp.clicks;
-  } else {
-    console.warn('[MCR bg] openEditor: tabId is null, cannot fetch clicks');
-  }
+async function openEditor(mimeType, ext) {
+  const events = await readAllEvents();
+  const { mcrVideoStartAt } = await chrome.storage.session.get('mcrVideoStartAt');
+  const config = await getStoredConfig();
 
-  // Persist click data and metadata for the editor to read
+  // Timestamps are absolute (Date.now()); make them relative to the first
+  // recorded video frame so zooms line up exactly with the footage
+  const videoStartAt = mcrVideoStartAt || events[0]?.at || Date.now();
+  const toRelative = e => ({ ...e, t: e.at - videoStartAt });
+
   await chrome.storage.session.set({
-    mcrEditorClicks: clicks,
+    mcrEditorClicks: events.filter(e => e.kind !== 'move').map(toRelative).filter(e => e.t >= 0),
+    mcrEditorMoves: events.filter(e => e.kind === 'move').map(toRelative).filter(e => e.t >= 0),
     mcrEditorMimeType: mimeType,
     mcrEditorExt: ext,
+    mcrEditorAutoExport: !!config.autoExport,
+    // New recording: the editor discards the previous project's edits
+    mcrEditorFresh: true,
   });
+  await resetEvents();
 
-  // Open the editor in a new tab
   await chrome.tabs.create({ url: chrome.runtime.getURL('editor/editor.html') });
 
   // Close offscreen doc after editor is opened
   setTimeout(() => closeOffscreenDocument(), 1000);
 }
+
+// --- Keyboard shortcut (works from any tab, no popup needed) ---
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command === 'toggle-recording') toggleRecording();
+});
 
 // --- Message listener ---
 
@@ -180,37 +303,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (type === MSG.START_RECORDING) {
-    loadState().then(() => {
+    loadState().then(async () => {
       if (isRecording) { sendResponse({ error: 'A recording is already in progress.' }); return; }
-      startRecording(message.config, sendResponse);
+      const config = Object.assign({}, DEFAULT_CONFIG, message.config);
+      sendResponse(await startRecording(config));
     });
     return true;
   }
 
   if (type === MSG.STOP_RECORDING) {
-    loadState().then(() => stopRecording(sendResponse));
+    loadState().then(async () => sendResponse(await stopRecording()));
     return true;
   }
 
+  if (type === MSG.RECORDER_STARTED) {
+    chrome.storage.session.set({ mcrVideoStartAt: message.at });
+    return false;
+  }
+
   if (type === MSG.RECORDING_READY) {
-    // Offscreen finished — collect clicks and open editor
-    chrome.storage.session.get('mcrPendingTabId').then(async (data) => {
-      const tabId = data.mcrPendingTabId || null;
-      await openEditor(message.mimeType, message.ext, tabId);
-      await chrome.storage.session.remove('mcrPendingTabId');
-    });
+    openEditor(message.mimeType, message.ext);
     return false;
   }
 
   if (type === MSG.RECORDING_ERROR) {
     console.error('[MCR] Recording failed in offscreen:', message.error);
+    clearCountdown();
+    flashBadgeError();
     closeOffscreenDocument().then(() => clearState());
     return false;
+  }
+
+  if (type === MSG.EVENTS_LOGGED) {
+    loadState().then(() => {
+      if (isRecording && sender.tab && sender.tab.id === recordingTabId && message.events?.length) {
+        appendEvents(message.events);
+      }
+    });
+    return false;
+  }
+
+  if (type === MSG.CONTENT_READY) {
+    // A page (re)loaded — resume capture if it's the recording tab
+    loadState().then(() => {
+      const active = isRecording && sender.tab && sender.tab.id === recordingTabId;
+      sendResponse(active
+        ? { active: true, config: recordingConfig, startTime: recordingStartTime }
+        : { active: false });
+    });
+    return true;
   }
 
   if (type === MSG.CONFIG_UPDATED) {
     loadState().then(() => {
       if (isRecording && recordingTabId) {
+        recordingConfig = Object.assign({}, recordingConfig, message.config);
+        saveState();
         sendToContentScript(recordingTabId, { type: MSG.CONFIG_UPDATED, config: message.config });
       }
     });
