@@ -15,18 +15,25 @@ let autoExportPending = false;
 let editorReady = false;   // video metadata loaded, safe to render / answer the MCP bridge
 
 // Default zoom settings (used as initial values per click, remembered across sessions)
+// Gentle by default: a moderate close-up that eases in and out slowly reads
+// as "camera work"; fast, deep zooms read as jumpy
 let defaults = {
-  zoomLevel: 1.8,
-  zoomInDuration: 500,
-  holdDuration: 1200,
-  zoomOutDuration: 600,
+  zoomLevel: 1.6,
+  zoomInDuration: 800,
+  holdDuration: 1500,
+  zoomOutDuration: 900,
   zoomOffset: 0,
 };
+
+// Bumped when the defaults above change meaning: stored defaults and camera
+// options saved by an older version are dropped once, so old (more
+// aggressive) values don't silently override the new ones
+const CAMERA_DEFAULTS_VERSION = 2;
 
 // Automatic camera behaviour
 let cameraOptions = {
   followCursor: true,  // pan with the cursor while zoomed in
-  mergeGap: 1200,      // ms — zooms closer than this are joined instead of bouncing out/in
+  mergeGap: 2500,      // ms — zooms closer than this (in time and place) are joined instead of bouncing out/in
   motion: 'smooth',    // key of MOTION_PRESETS
   autoZoom: true,      // zoom level from the clicked element's size
   zoomIntensity: 1,    // multiplier on auto zoom
@@ -103,16 +110,17 @@ function zoomTimes(click) {
 // the screen (small buttons get closer, big forms stay wider). Falls back to
 // the event's own level when there is no element box or it was set by hand.
 const AUTO_ZOOM_MIN = 1.25;
-const AUTO_ZOOM_MAX = 2.6;
+const AUTO_ZOOM_MAX = 2.1;   // deeper than this loses the context around the element
 
 function zoomLevelOf(c) {
   if (!cameraOptions.autoZoom || c.zoomAuto === false || !c.rect || !c.vw) return c.zoomLevel;
   const rw = Math.max(0.02, c.rect.w / c.vw);
   const rh = Math.max(0.02, c.rect.h / c.vh);
-  // Element (plus breathing room) ≈ 38 % of the visible width or 42 % of the
-  // height. A crop window already shows less, so it may need no zoom at all
+  // Element (plus breathing room) ≈ half the visible width or height, so what
+  // surrounds it stays readable. A crop window already shows less, so it may
+  // need no zoom at all
   const { fx, fy } = visibleFraction();
-  const fit = Math.min(0.38 * fx / rw, 0.42 * fy / rh) * (cameraOptions.zoomIntensity || 1);
+  const fit = Math.min(0.5 * fx / rw, 0.55 * fy / rh) * (cameraOptions.zoomIntensity || 1);
   return Math.min(AUTO_ZOOM_MAX, Math.max(isCropping() ? 1 : AUTO_ZOOM_MIN, fit));
 }
 
@@ -121,12 +129,13 @@ function logLerp(a, b, k) {
   return Math.exp(Math.log(a) + (Math.log(b) - Math.log(a)) * k);
 }
 
-function envelopeScale(tMs, click, lvl) {
-  const { start, peak, holdEnd, end } = zoomTimes(click);
+// times: zoomTimes(click), possibly with an earlier holdEnd/end (see buildCameraPath)
+function envelopeScale(tMs, click, lvl, times = zoomTimes(click)) {
+  const { start, peak, holdEnd, end } = times;
   if (tMs <= start || tMs >= end) return 1;
   if (tMs <= peak)    return logLerp(1, lvl, easings.inOut((tMs - start) / click.zoomInDuration));
   if (tMs <= holdEnd) return lvl;
-  return logLerp(lvl, 1, easings.inOut((tMs - holdEnd) / click.zoomOutDuration));
+  return logLerp(lvl, 1, easings.inOut((tMs - holdEnd) / (end - holdEnd)));
 }
 
 // --- Automatic camera ---
@@ -135,12 +144,22 @@ function envelopeScale(tMs, click, lvl) {
 
 const CAMERA_FPS = 60;
 
-// Motion character: spring stiffness/damping and how freely the cursor roams
+// Motion character: spring stiffness/damping and how freely the cursor roams.
+// The camera stays put while the cursor is within `roam` of the view centre
+// (fraction of the visible size); once it goes further, the camera reframes
+// in one move so the cursor ends up `settle` from the centre, then holds
+// still again. Following the cursor continuously made the picture drift
+// with every hand movement.
 const MOTION_PRESETS = {
-  smooth: { omega: 5.5, zeta: 1.0,  deadzone: 0.24, label: 'Smooth' },
-  snappy: { omega: 10,  zeta: 0.72, deadzone: 0.18, label: 'Snappy' },
-  calm:   { omega: 3.6, zeta: 1.0,  deadzone: 0.34, label: 'Calm' },
+  smooth: { omega: 4.5, zeta: 1.0,  roam: 0.34, settle: 0.12, label: 'Smooth' },
+  snappy: { omega: 9,   zeta: 0.75, roam: 0.28, settle: 0.10, label: 'Snappy' },
+  calm:   { omega: 3.2, zeta: 1.0,  roam: 0.40, settle: 0.15, label: 'Calm' },
 };
+
+// Two zooms are joined only if the second element would be on screen from the
+// first one's framing; otherwise panning across the page zoomed in is worse
+// than easing out and back in
+const BRIDGE_REACH = 0.42;
 
 let cameraPath = null;         // { scale, cx, cy } as Float32Arrays indexed by frame
 
@@ -197,11 +216,23 @@ function buildCameraPath() {
     ? clicks.map(c => ({ c, start: zoomTimes(c).start })).sort((a, b) => a.start - b.start)
     : active;
 
-  // Bridges keep the zoom up between events that are close together
+  // Bridges keep the zoom up between events that are close together in time
+  // and on the page. An event far from the next one instead lets go early:
+  // its zoom-out finishes as the next zoom-in starts (or as soon as its own
+  // peak allows), so the camera crosses the page zoomed out, not zoomed in
   const bridges = [];
   for (let i = 0; i + 1 < active.length; i++) {
     const a = active[i], b = active[i + 1];
-    if (b.start - a.end < cameraOptions.mergeGap && b.peak > a.peak) bridges.push({ a, b });
+    const lvl = Math.max(a.lvl, b.lvl);
+    const near = Math.abs(b.c.nx - a.c.nx) < BRIDGE_REACH * fx / lvl
+              && Math.abs(b.c.ny - a.c.ny) < BRIDGE_REACH * fy / lvl;
+    if (near) {
+      if (b.start - a.end < cameraOptions.mergeGap && b.peak > a.peak) bridges.push({ a, b });
+    } else if (a.end > b.start) {
+      const out = Math.min(a.c.zoomOutDuration, Math.max(250, (b.peak - a.peak) / 2));
+      a.end = Math.max(a.peak + out, b.start);
+      a.holdEnd = Math.max(a.peak, a.end - out);
+    }
   }
 
   const dt = 1 / CAMERA_FPS;
@@ -217,28 +248,37 @@ function buildCameraPath() {
 
     // 1. Zoom level from the events
     let s = 1;
-    for (const a of active) s = Math.max(s, envelopeScale(tMs, a.c, a.lvl));
+    for (const a of active) s = Math.max(s, envelopeScale(tMs, a.c, a.lvl, a));
     for (const { a, b } of bridges) {
       if (tMs > a.peak && tMs < b.peak) {
         s = Math.max(s, logLerp(a.lvl, b.lvl, easings.inOut((tMs - a.peak) / (b.peak - a.peak))));
       }
     }
 
-    // 2. Focus target: the event the camera is currently heading to
+    // 2. Focus target: the event the camera is currently heading to. While
+    //    zoomed in, an event that is already comfortably in view (same form,
+    //    same menu) doesn't move the camera — re-aiming at every click is
+    //    what made it twitch
     while (focusIdx + 1 < focus.length && focus[focusIdx + 1].start <= tMs) {
       focusIdx++;
-      anchorX = focus[focusIdx].c.nx;
-      anchorY = focus[focusIdx].c.ny;
+      const c = focus[focusIdx].c;
+      const zoomed = prevScale > 1.01 || crop;
+      const inView = Math.abs(c.nx - anchorX) < motion.roam * fx / s
+                  && Math.abs(c.ny - anchorY) < motion.roam * fy / s;
+      if (!zoomed || !inView) {
+        anchorX = c.nx;
+        anchorY = c.ny;
+      }
     }
 
-    // 3. Soft cursor follow: only pan once the cursor leaves the dead zone
+    // 3. Cursor follow with hysteresis: hold still while the cursor roams
+    //    near the centre, reframe in one move when it heads off-screen
     if (cameraOptions.followCursor && (s > 1.01 || crop)) {
       const cur = cursorAt(tMs);
       if (cur) {
-        const zoneX = motion.deadzone * fx / s, zoneY = motion.deadzone * fy / s;
         const dx = cur.nx - anchorX, dy = cur.ny - anchorY;
-        if (Math.abs(dx) > zoneX) anchorX = cur.nx - Math.sign(dx) * zoneX;
-        if (Math.abs(dy) > zoneY) anchorY = cur.ny - Math.sign(dy) * zoneY;
+        if (Math.abs(dx) > motion.roam * fx / s) anchorX = cur.nx - Math.sign(dx) * motion.settle * fx / s;
+        if (Math.abs(dy) > motion.roam * fy / s) anchorY = cur.ny - Math.sign(dy) * motion.settle * fy / s;
       }
     }
 
@@ -263,9 +303,10 @@ function buildCameraPath() {
       y += vy * dt;
     }
 
-    // 6. Long trips while zoomed in pull back a little mid-way (orientation)
+    // 6. Long trips while zoomed in pull back a little mid-way (orientation);
+    //    short reframes don't, or every pan makes the zoom breathe
     const travel = Math.hypot((targetX - x) / fx, (targetY - y) / fy) * s; // in "screens"
-    const wantDip = 1 + 0.9 * Math.max(0, travel - 0.3);
+    const wantDip = 1 + 0.5 * Math.max(0, travel - 0.6);
     dip += (wantDip - dip) * lp;
     const sOut = Math.max(1, s / dip);
 
@@ -623,9 +664,16 @@ async function loadData() {
   const data = await chrome.storage.session.get([
     'mcrEditorClicks', 'mcrEditorMoves', 'mcrEditorMimeType', 'mcrEditorExt', 'mcrEditorAutoExport', 'mcrEditorFresh',
   ]);
-  const stored = await chrome.storage.sync.get(['mcrEditorDefaults', 'mcrCameraOptions']);
-  Object.assign(defaults, stored.mcrEditorDefaults);
+  const stored = await chrome.storage.sync.get(['mcrEditorDefaults', 'mcrCameraOptions', 'mcrCameraDefaultsVersion']);
   const storedCam = stored.mcrCameraOptions || {};
+  if ((stored.mcrCameraDefaultsVersion || 1) < CAMERA_DEFAULTS_VERSION) {
+    // Saved by an older version: its zoom timings and merge gap were the
+    // aggressive ones; start from the new defaults (frame, format etc. stay)
+    delete stored.mcrEditorDefaults;
+    delete storedCam.mergeGap;
+    chrome.storage.sync.set({ mcrCameraDefaultsVersion: CAMERA_DEFAULTS_VERSION });
+  }
+  Object.assign(defaults, stored.mcrEditorDefaults);
   Object.assign(cameraOptions, storedCam, { frame: { ...cameraOptions.frame, ...storedCam.frame } });
 
   mimeType = data.mcrEditorMimeType || 'video/webm';
@@ -834,9 +882,9 @@ function escapeHtml(str) {
 
 // --- Zoom style presets (one click for the whole video) ---
 const ZOOM_PRESETS = {
-  subtle: { label: 'Subtle', intensity: 0.8, zoomLevel: 1.4, zoomInDuration: 650, holdDuration: 1000, zoomOutDuration: 750, zoomOffset: 0 },
-  normal: { label: 'Normal', intensity: 1,   zoomLevel: 1.8, zoomInDuration: 500, holdDuration: 1200, zoomOutDuration: 600, zoomOffset: 0 },
-  punchy: { label: 'Punchy', intensity: 1.3, zoomLevel: 2.4, zoomInDuration: 350, holdDuration: 1300, zoomOutDuration: 450, zoomOffset: 0 },
+  subtle: { label: 'Subtle', intensity: 0.8, zoomLevel: 1.35, zoomInDuration: 950, holdDuration: 1500, zoomOutDuration: 1050, zoomOffset: 0 },
+  normal: { label: 'Normal', intensity: 1,   zoomLevel: 1.6,  zoomInDuration: 800, holdDuration: 1500, zoomOutDuration: 900,  zoomOffset: 0 },
+  punchy: { label: 'Punchy', intensity: 1.2, zoomLevel: 2.0,  zoomInDuration: 550, holdDuration: 1400, zoomOutDuration: 650,  zoomOffset: 0 },
 };
 
 function currentZoomPreset() {

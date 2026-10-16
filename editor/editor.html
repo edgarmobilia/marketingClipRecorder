@@ -76,23 +76,23 @@
           <div class="settings-title">Defaults for every zoom</div>
           <div class="setting-row">
             <label>Zoom</label>
-            <input type="range" id="defaultZoom" min="1.1" max="3" step="0.1" value="1.8">
-            <span class="setting-val" id="defaultZoomVal">1.8×</span>
+            <input type="range" id="defaultZoom" min="1.1" max="3" step="0.1" value="1.6">
+            <span class="setting-val" id="defaultZoomVal">1.6×</span>
           </div>
           <div class="setting-row">
             <label>Ease in</label>
-            <input type="range" id="defaultZoomIn" min="100" max="3000" step="50" value="500">
-            <span class="setting-val" id="defaultZoomInVal">500ms</span>
+            <input type="range" id="defaultZoomIn" min="100" max="3000" step="50" value="800">
+            <span class="setting-val" id="defaultZoomInVal">800ms</span>
           </div>
           <div class="setting-row">
             <label>Hold</label>
-            <input type="range" id="defaultHold" min="0" max="4000" step="100" value="1200">
-            <span class="setting-val" id="defaultHoldVal">1200ms</span>
+            <input type="range" id="defaultHold" min="0" max="4000" step="100" value="1500">
+            <span class="setting-val" id="defaultHoldVal">1500ms</span>
           </div>
           <div class="setting-row">
             <label>Ease out</label>
-            <input type="range" id="defaultZoomOut" min="100" max="3000" step="50" value="600">
-            <span class="setting-val" id="defaultZoomOutVal">600ms</span>
+            <input type="range" id="defaultZoomOut" min="100" max="3000" step="50" value="900">
+            <span class="setting-val" id="defaultZoomOutVal">900ms</span>
           </div>
           <div class="setting-row">
             <label>Offset</label>
@@ -101,9 +101,9 @@
           </div>
           <button id="applyDefaultsBtn" class="btn btn-sm">Apply to all</button>
           <div class="setting-row merge-row">
-            <label for="mergeGap" title="Zooms closer than this stay zoomed in between">Merge</label>
-            <input type="range" id="mergeGap" min="0" max="4000" step="100" value="1200">
-            <span class="setting-val" id="mergeGapVal">1200ms</span>
+            <label for="mergeGap" title="Zooms closer than this (and in the same area) stay zoomed in between">Merge</label>
+            <input type="range" id="mergeGap" min="0" max="5000" step="100" value="2500">
+            <span class="setting-val" id="mergeGapVal">2500ms</span>
           </div>
         </details>
       </div>

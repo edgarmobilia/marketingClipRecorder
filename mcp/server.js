@@ -310,10 +310,10 @@ ZOOM & CAMERA (taste)
 - Auto zoom (element-sized) is on by default and usually right; only override zoom_level when a frame proves it wrong.
 - Not every click deserves a zoom: disable zooms on navigation clicks, repeated/accidental clicks, and clicks
   that open a new page (zoom out instead — use a wide shot, scale 1). Keep zooms on the 3–6 key actions.
-- Close actions in the same area should share one zoom (merge_gap_ms 1200–2500).
+- Close actions in the same area should share one zoom (merge_gap_ms 2000–3500; clicks far apart ease out between them automatically).
 - motion: "smooth" for most marketing, "snappy" for energetic/social clips, "calm" for enterprise/tutorials.
 - Use director shots (add_shot) for intent: wide shot after a scene change, close-up on a result (chart, success
-  message) that has no click on it. 1.6–2.2× close-ups read best; avoid > 2.8×.
+  message) that has no click on it. 1.5–2.0× close-ups read best; avoid > 2.2× (loses the context around the element).
 - frame.enabled gives the polished "product video" look; padding 0.04–0.08. Prefer a calm solid background (near-black,
   off-white, or a muted brand tint); a subtle two-tone gradient at most — no saturated multi-colour gradients.
 
