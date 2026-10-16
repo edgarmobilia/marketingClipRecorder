@@ -77,6 +77,8 @@ body {
 .format-picker { display: flex; gap: 4px; margin-right: 8px; }
 .format-picker select { padding: 6px 8px; }
 .format-picker select:disabled { display: none; }
+.safe-toggle { padding: 6px 10px; font-size: 12px; }
+.safe-toggle.active { border-color: #ff5078; color: #ff8aa5; }
 
 .btn-icon {
   background: none;

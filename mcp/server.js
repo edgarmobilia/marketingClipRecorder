@@ -299,9 +299,12 @@ WORKFLOW
 5. Tell the user in a few lines what you did and why; offer 1–2 optional alternatives. Export only when asked.
 
 PACING (most important)
-- Dead time kills demos. Frozen stretches (analyze_video static_ranges) > 1.5 s: cut. Loading/animations: speed up 4–8×.
+- Dead time kills demos. Frozen stretches (analyze_video static_ranges) > 1.5 s: cut. Pure waiting (loading,
+  spinners, nothing to read): speed up 3–6×.
+- Never speed up stretches with clicks, typing or something to read beyond 1.5× — viewers must follow the
+  action. Over-accelerated demos feel rushed; cutting dead time beats speeding everything up.
 - Aim for a tight final length (often 20–60 s). Keep ~0.3–0.6 s of context around actions.
-- Typing long text: speed up 2–4× after the first word or two.
+- Typing long text: speed up 1.5–2× after the first word or two.
 
 ZOOM & CAMERA (taste)
 - Auto zoom (element-sized) is on by default and usually right; only override zoom_level when a frame proves it wrong.
@@ -333,6 +336,27 @@ TEXT LOOK — editorial, not "AI template" (think Linear / Stripe / Apple / Noti
 - Motion: "fade" or "slide-up" (short, a few pixels). Don't put "pop" on everything; never stack animated texts.
 - Layout: generous margins from the frame edge; left-aligned titles / lower-thirds read more editorial than
   centring everything. Check contrast on both light and dark UI with get_frame.
+
+SOCIAL / VERTICAL (TikTok, Instagram Reels, YouTube Shorts) — when the user mentions them or "vertical"
+- set_camera aspect "9:16". Layout (aspect_mode):
+  · "window" (default choice for web products): a large box that follows the action on the blurred recording
+    (backdrop "blur"), leaving a top band for the headline and a bottom band for a caption. window.ratio 1
+    (square) reads well; 0.8 (4:5) when the UI needs height. window.y moves the box (0.5 centre, ~0.54 default).
+  · "crop": full-bleed, the camera follows the action through a phone-width slice. Most immersive; best when
+    each step happens in one small area. Every step must be framed by a click, cursor or shot.
+  · "fit": the whole page, tiny on a phone. Only for a brief overview moment.
+- Formats are independent: texts (position, size, max_width, font_size) and the layout mode are stored per
+  aspect. Switch aspect, then lay out texts for that format; the other format keeps its own layout. Build the
+  vertical cut after the horizontal one is good, or vice versa.
+- Safe zone: TikTok / Reels UI covers the top ~10 %, bottom ~20 % and right ~14 % (get_project
+  recording.safe_zone). Texts are clamped inside automatically, but place them deliberately: headline in the top
+  band just under the safe edge, caption above the bottom 20 %. Verify with get_frame / get_contact_sheet
+  safe_zones=true.
+- Hook in the first 1–2 s: a headline stating the outcome ("Envía fichas por WhatsApp en 3 clics"), visible from
+  0 s, ≤ 7 words, font_size 64–80 at 1080 px wide. Step labels 44–52, captions 36–44. Small text dies on a phone.
+- One idea per video, 15–35 s total. Gentle pacing (see PACING): mobile viewers need time to read.
+- Close with a short CTA (product name + what to do). Export several formats in one go with
+  export_video formats ["9:16", "source"] when asked.
 
 CURSOR
 - Chrome burns the real system cursor into tab recordings while the mouse moves (it cannot be turned off).
@@ -442,6 +466,7 @@ server.registerTool('get_frame', {
     time_sec: z.number().min(0).describe('Time in seconds'),
     rendered: z.boolean().optional().describe('Default true'),
     max_width: z.number().int().min(160).max(3840).optional().describe('Default 1280'),
+    safe_zones: z.boolean().optional().describe('Shade the area the TikTok / Reels UI covers (9:16 only); never exported'),
   },
   annotations: { readOnlyHint: true },
 }, (args) => run(async () => asImage(await callEditor('get_frame', args), `Frame at ${args.time_sec}s`)));
@@ -457,6 +482,7 @@ server.registerTool('get_contact_sheet', {
     columns: z.number().int().min(1).max(8).optional().describe('Default 4'),
     rendered: z.boolean().optional().describe('Default true'),
     thumb_width: z.number().int().min(120).max(960).optional().describe('Default 480'),
+    safe_zones: z.boolean().optional().describe('Shade the area the TikTok / Reels UI covers (9:16 only)'),
   },
   annotations: { readOnlyHint: true },
 }, (args) => run(async () => asImage(await callEditor('get_contact_sheet', args))));
@@ -501,7 +527,15 @@ server.registerTool('set_camera', {
     '(turn off for a seamless marketing cut). aspect: output format — "source" (as recorded), "16:9", ' +
     '"9:16" (Reels/TikTok/Shorts), "1:1", "4:5"; aspect_mode "crop" fills the format and the camera follows the ' +
     'action through the narrower window (auto zoom accounts for it; scale-1 shots show the crop, not the whole page), ' +
-    '"fit" shows the whole recording on the frame background. frame: inset the recording on a background ' +
+    '"window" is a large box (window.ratio w/h, window.y centre 0–1) that follows the action on the backdrop, with ' +
+    'bands for a headline and caption — the usual vertical SaaS layout; ' +
+    '"fit" shows the whole recording on the frame background. aspect_mode, backdrop and window are stored per ' +
+    'format like texts. backdrop: what fills the space around a fit ' +
+    'layout or frame — "color" (frame.background) or "blur" (the recording itself, blurred: the usual look for ' +
+    'vertical SaaS demos, with a headline in the top band). Text positions, size, max_width and font_size are ' +
+    'stored per format: switching aspect restores that format\'s text layout, so lay texts out again for a new ' +
+    'format. 9:16 has a safe zone (get_project recording.safe_zone) that the TikTok / Reels UI covers; texts are ' +
+    'kept inside it automatically. frame: inset the recording on a background ' +
     '(enabled, padding 0–0.2 of the height, radius px@1080, background colour or 2–4 colour gradient, shadow). ' +
     'Long pans while zoomed in automatically pull back mid-way for orientation. Undoable.',
   inputSchema: {
@@ -513,7 +547,12 @@ server.registerTool('set_camera', {
     motion_blur: z.boolean().optional(),
     speed_badge: z.boolean().optional(),
     aspect: z.enum(['source', '16:9', '9:16', '1:1', '4:5']).optional(),
-    aspect_mode: z.enum(['crop', 'fit']).optional(),
+    aspect_mode: z.enum(['crop', 'window', 'fit']).optional(),
+    backdrop: z.enum(['color', 'blur']).optional(),
+    window: z.object({
+      ratio: z.number().min(0.56).max(1.78).optional().describe('Box width / height; 1 = square (default), 0.8 = 4:5'),
+      y: z.number().min(0.25).max(0.75).optional().describe('Box centre, 0–1 of the frame height (default 0.54)'),
+    }).optional(),
     frame: z.object({
       enabled: z.boolean().optional(),
       padding: z.number().min(0).max(0.2).optional(),
@@ -701,9 +740,12 @@ server.registerTool('export_video', {
   description:
     'Starts rendering the final MP4 in the editor (frame-exact offline render at 60 fps; falls back to ' +
     'real-time recording if the browser cannot). The file is downloaded by Chrome when done. Keep the editor ' +
-    'tab open. Only do this when the user asks.',
-  inputSchema: {},
-}, () => run(async () => asText(await callEditor('export_video'))));
+    'tab open. Only do this when the user asks. formats: export several output formats one after another (one ' +
+    'MP4 each, named by format), each with its own text layout and mode; omit to export the current format.',
+  inputSchema: {
+    formats: z.array(z.enum(['source', '16:9', '9:16', '1:1', '4:5'])).max(5).optional(),
+  },
+}, (args) => run(async () => asText(await callEditor('export_video', args))));
 
 // --- Prompts (slash commands in Claude Code) ---
 
@@ -724,6 +766,31 @@ server.registerPrompt('polish', {
         'guide: analyse it, tighten the pacing (cut/speed up dead time), keep zooms only on the key actions, add ' +
         'a short opening title, step callouts and a closing line, set a consistent look, frame and cursor, then ' +
         'verify with rendered frames and fix what looks off. Do not export.' +
+        (goal ? `\nGoal / message: ${goal}` : '') +
+        (style ? `\nStyle notes: ${style}` : '') +
+        '\nFinish with a short summary of what you changed.',
+    },
+  }],
+}));
+
+server.registerPrompt('social', {
+  title: 'Vertical cut for TikTok / Reels',
+  description: 'Turn the open clip into a vertical (9:16) marketing video for TikTok, Instagram Reels or Shorts',
+  argsSchema: {
+    goal: z.string().optional().describe('The one message / outcome to sell (optional)'),
+    style: z.string().optional().describe('Brand or style notes (optional)'),
+  },
+}, ({ goal, style }) => ({
+  messages: [{
+    role: 'user',
+    content: {
+      type: 'text',
+      text:
+        'Make a vertical 9:16 cut of the clip open in the Clip Editor for TikTok / Instagram Reels, following the ' +
+        'SOCIAL / VERTICAL part of your director guide: pick the layout (window, crop or fit) from what the clip ' +
+        'shows, tighten the pacing without rushing the actions, add an outcome headline visible from 0 s, short step ' +
+        'labels and a closing CTA sized for a phone, keep everything inside the safe zone, then verify with rendered ' +
+        'frames (safe_zones=true) and fix what looks off. The horizontal layout must stay intact. Do not export.' +
         (goal ? `\nGoal / message: ${goal}` : '') +
         (style ? `\nStyle notes: ${style}` : '') +
         '\nFinish with a short summary of what you changed.',

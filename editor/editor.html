@@ -23,10 +23,13 @@
           <option value="1:1">1:1 Square</option>
           <option value="4:5">4:5 Portrait</option>
         </select>
-        <select id="aspectModeSelect" class="btn" title="Crop follows the action; Fit shows the whole recording on the background">
+        <select id="aspectModeSelect" class="btn" title="Crop fills the format and follows the action; Window: a large box that follows the action, with room for a headline and a caption; Fit shows the whole recording">
           <option value="crop">Crop</option>
-          <option value="fit">Fit</option>
+          <option value="window">Window</option>
+          <option value="fit-blur">Fit · blur</option>
+          <option value="fit">Fit · colour</option>
         </select>
+        <button id="safeZoneToggle" class="btn safe-toggle" title="Show where the TikTok / Reels UI covers the video (preview only)">Safe zones</button>
       </div>
       <button id="previewBtn" class="btn">▶ Preview</button>
       <button id="exportBtn" class="btn btn-primary">⬇ Export video</button>

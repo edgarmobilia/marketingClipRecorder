@@ -125,6 +125,34 @@ function createOverlay(params = {}) {
   return normalizeOverlay(Object.assign(o, stripUndefined(params), { id: o.id, style, v: 2 }));
 }
 
+// --- Per-format layout ---
+// Position and size belong to the output format: the live fields always
+// hold the current format's layout, and switching formats parks them in
+// o.layouts[format] and restores the target's (or keeps them, first time).
+const LAYOUT_FIELDS = ['x', 'y', 'w', 'h', 'anchor', 'size'];
+const LAYOUT_DESIGN = ['maxWidth', 'fontSize'];
+
+function captureLayout(o) {
+  const l = Object.fromEntries(LAYOUT_FIELDS.map(k => [k, o[k]]));
+  l.design = Object.fromEntries(LAYOUT_DESIGN.filter(k => o.design[k] !== undefined).map(k => [k, o.design[k]]));
+  return l;
+}
+
+function swapTextLayouts(from, to) {
+  for (const o of overlays) {
+    o.layouts = o.layouts || {};
+    o.layouts[from] = captureLayout(o);
+    const l = o.layouts[to];
+    if (!l) continue;
+    for (const k of LAYOUT_FIELDS) if (l[k] !== undefined) o[k] = l[k];
+    for (const k of LAYOUT_DESIGN) {
+      if (l.design && l.design[k] !== undefined) o.design[k] = l.design[k];
+      else delete o.design[k];
+    }
+    normalizeOverlay(o);
+  }
+}
+
 function normalizeOverlay(o) {
   const clamp01 = v => Math.min(1, Math.max(0, Number(v) || 0));
 
@@ -378,10 +406,13 @@ function drawOverlay(c, o, tMs, view) {
   }
   if (!lines.length) { c.restore(); return; }
 
-  // Keep the box on screen, clear of the frame edge
+  // Keep the box on screen, clear of the frame edge and of the app UI that
+  // covers vertical formats (TikTok / Reels safe zone)
   const m = Math.max(fontPx * 0.4, U * 0.03);
-  bx = Math.min(W - boxW - m, Math.max(m, bx));
-  by = Math.min(H - boxH - m, Math.max(m, by));
+  const sz = view.safe || { x: 0, y: 0, w: W, h: H };
+  const mx = sz.x > 0 ? fontPx * 0.15 : m, my = sz.y > 0 ? fontPx * 0.15 : m;
+  bx = Math.max(sz.x + mx, Math.min(sz.x + sz.w - boxW - mx, bx));
+  by = Math.max(sz.y + my, Math.min(sz.y + sz.h - boxH - my, by));
   const cx = bx + boxW / 2, cy = by + boxH / 2;
 
   // 'auto' ink reads what is already drawn under the text (before any motion)

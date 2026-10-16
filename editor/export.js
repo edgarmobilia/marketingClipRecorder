@@ -40,16 +40,34 @@ function setExportProgress(frac, msg) {
   exportPercent.textContent = msg || pct + '%';
 }
 
-function downloadBlob(blob, fileExt) {
+function downloadBlob(blob, fileExt, label = '') {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `clip-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.${fileExt}`;
+  a.download = `clip-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}${label ? '-' + label : ''}.${fileExt}`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-async function exportVideo() {
+// Several output formats in a row, one file each (texts and layout mode come
+// from each format's own layout). The editor returns to its format afterwards;
+// nothing in the project changes, so it is not an undo step
+async function exportFormats(formats) {
+  const original = cameraOptions.aspect || 'source';
+  const show = f => { setOutputFormat(f); applyOutputSize(); invalidateCamera(); };
+  try {
+    for (const f of formats) {
+      show(f);
+      await exportVideo({ label: f === 'source' ? 'original' : f.replace(':', 'x') });
+    }
+  } finally {
+    show(original);
+    rerender();
+  }
+}
+
+// label: appended to the file name (e.g. the format when exporting several)
+async function exportVideo({ label = '' } = {}) {
   if (!videoBlob || exportJob) return;
   const job = exportJob = { cancelled: false };
   const resumeAt = sourceVideo.currentTime;
@@ -67,7 +85,7 @@ async function exportVideo() {
       setExportUi(true, 'Recording in real time (do not switch tabs)...');
       result = await exportRealtime(job);
     }
-    downloadBlob(result.blob, result.ext);
+    downloadBlob(result.blob, result.ext, label);
   } catch (err) {
     if (!(err instanceof ExportCancelled)) {
       console.error('[MCR export] Error:', err);

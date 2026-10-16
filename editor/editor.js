@@ -34,6 +34,7 @@ let cameraOptions = {
   speedBadge: true,    // "⏩ N×" tag while a speed-up plays
   aspect: 'source',    // output format: key of ASPECTS
   aspectMode: 'crop',  // other ratio: 'crop' follows the action, 'fit' shows it all
+  backdrop: 'color',   // behind 'fit' / the frame: 'color' (frame.background) or 'blur' (the recording)
   // Inset frame on a background (off = full-bleed recording)
   frame: { enabled: false, padding: 0.06, radius: 18, background: ['#1e293b', '#0f172a'], shadow: true },
 };
@@ -293,18 +294,69 @@ function outputRatio() {
   return ASPECTS[cameraOptions.aspect] || null;
 }
 
+// 'crop' and 'window' both show part of the page and follow the action
 function isCropping() {
   return !!outputRatio() && cameraOptions.aspectMode !== 'fit';
 }
 
-// The recording's short side stays; the ratio sets the other one
+// 'window': a large box (ratio w/h) at height y (0–1, box centre) on the
+// backdrop, leaving bands above and below for a headline and a caption
+const WINDOW_DEFAULTS = { ratio: 1, y: 0.54 };
+
+function windowOptions() {
+  const w = { ...WINDOW_DEFAULTS, ...cameraOptions.window };
+  return { ratio: Math.min(1.78, Math.max(0.56, w.ratio)), y: Math.min(0.75, Math.max(0.25, w.y)) };
+}
+
+// Social formats get at least 1080 px on the short side (9:16 → 1080×1920),
+// or the recording's short side when it is larger
 function outputSize() {
   const sw = sourceVideo.videoWidth, sh = sourceVideo.videoHeight;
   const r = outputRatio();
   if (!r) return { W: sw, H: sh };
-  const short = Math.min(sw, sh);
+  const short = Math.max(1080, Math.min(sw, sh));
   const even = v => Math.round(v / 2) * 2; // encoders want even dimensions
   return r >= 1 ? { W: even(short * r), H: short } : { W: short, H: even(short / r) };
+}
+
+// Where TikTok / Reels draw their own UI (search bar, caption, action
+// column), as fractions of the frame. Conservative union of both apps
+const SAFE_ZONES = {
+  '9:16': { top: 0.10, bottom: 0.20, left: 0.06, right: 0.14 },
+};
+
+function safeZone() {
+  return SAFE_ZONES[cameraOptions.aspect] || null;
+}
+
+// Safe area in canvas px (the whole canvas when the format has none)
+function safeRect(W, H) {
+  const z = safeZone();
+  if (!z) return { x: 0, y: 0, w: W, h: H };
+  return { x: W * z.left, y: H * z.top, w: W * (1 - z.left - z.right), h: H * (1 - z.top - z.bottom) };
+}
+
+let showSafeZones = true; // preview-only guide, never exported
+
+// Per-format camera layout, parked in cameraOptions.formatModes[format]
+const FORMAT_CAMERA = ['aspectMode', 'backdrop', 'window'];
+
+// Switches the output format. Texts and the layout mode are kept per format,
+// so preparing the vertical cut doesn't break the horizontal one
+function setOutputFormat(aspect, mode) {
+  const from = cameraOptions.aspect || 'source';
+  if (aspect !== undefined && aspect !== from) {
+    swapTextLayouts(from, aspect);
+    const modes = cameraOptions.formatModes = cameraOptions.formatModes || {};
+    modes[from] = Object.fromEntries(FORMAT_CAMERA.map(k => [k, cameraOptions[k]]));
+    if (modes[aspect]) Object.assign(cameraOptions, modes[aspect]);
+    cameraOptions.aspect = aspect;
+  }
+  if (mode !== undefined) {
+    cameraOptions.aspectMode = mode === 'crop' || mode === 'window' ? mode : 'fit';
+    if (mode === 'window' || mode === 'fit-blur') cameraOptions.backdrop = 'blur';
+    else if (mode === 'fit') cameraOptions.backdrop = 'color';
+  }
 }
 
 function applyOutputSize() {
@@ -329,6 +381,13 @@ function layoutBox(W, H) {
   const f = cameraOptions.frame;
   const k = f && f.enabled ? 1 - 2 * Math.min(0.2, Math.max(0, f.padding ?? 0.06)) : 1;
   const area = { x: (W - W * k) / 2, y: (H - H * k) / 2, w: W * k, h: H * k };
+  if (outputRatio() && cameraOptions.aspectMode === 'window') {
+    const { ratio, y } = windowOptions();
+    const h = Math.min(area.h, area.w / ratio);
+    const top = Math.min(area.y + area.h - h, Math.max(area.y, area.y + area.h * y - h / 2));
+    const vp = { x: area.x, y: top, w: area.w, h };
+    return { vp, b: Math.max(vp.w / sw, vp.h / sh) };
+  }
   if (isCropping()) return { vp: area, b: Math.max(area.w / sw, area.h / sh) };
   const b = Math.min(area.w / sw, area.h / sh);
   const w = sw * b, h = sh * b;
@@ -358,7 +417,7 @@ function cameraView(timeSec) {
   // video always covers it
   const tx = vp.x + Math.max(vp.w - vw * sc, Math.min(0, vp.w / 2 - cx * vw * sc));
   const ty = vp.y + Math.max(vp.h - vh * sc, Math.min(0, vp.h / 2 - cy * vh * sc));
-  return { W, H, U: Math.min(W, H), vw, vh, vp, s: sc, tx, ty };
+  return { W, H, U: Math.min(W, H), vw, vh, vp, s: sc, tx, ty, safe: safeRect(W, H) };
 }
 
 // The untouched recording, whole, centred on the canvas
@@ -382,6 +441,57 @@ function drawFrameBackground(W, H) {
   ctx.fillRect(0, 0, W, H);
 }
 
+// The recording itself, blurred and darkened, filling the canvas behind a
+// 'fit' layout. Drawn tiny and scaled up: the upscale does most of the blur
+const blurCanvas = document.createElement('canvas');
+const blurCtx = blurCanvas.getContext('2d');
+
+function drawBlurBackdrop(W, H, source) {
+  const sw = sourceVideo.videoWidth || W, sh = sourceVideo.videoHeight || H;
+  blurCanvas.width = Math.max(8, Math.round(W / 24));
+  blurCanvas.height = Math.max(8, Math.round(H / 24));
+  const b = Math.max(blurCanvas.width / sw, blurCanvas.height / sh) * 1.15;
+  const dw = sw * b, dh = sh * b;
+  const dx = (blurCanvas.width - dw) / 2, dy = (blurCanvas.height - dh) / 2;
+  blurCtx.filter = 'blur(1.5px)';
+  if (source === sourceVideo) blurCtx.drawImage(sourceVideo, dx, dy, dw, dh);
+  else source.draw(blurCtx, dx, dy, dw, dh);
+  blurCtx.filter = 'none';
+  ctx.save();
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(blurCanvas, 0, 0, W, H);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+function drawBackdrop(W, H, source) {
+  if (cameraOptions.backdrop === 'blur') drawBlurBackdrop(W, H, source);
+  else drawFrameBackground(W, H);
+}
+
+// Preview guide: shades where the TikTok / Reels UI will sit
+function drawSafeZoneGuide(W, H) {
+  if (!safeZone()) return;
+  const r = safeRect(W, H);
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 40, 90, 0.16)';
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.rect(r.x, r.y, r.w, r.h);
+  ctx.fill('evenodd');
+  ctx.strokeStyle = 'rgba(255, 80, 120, 0.9)';
+  ctx.lineWidth = Math.max(2, W * 0.003);
+  ctx.setLineDash([W * 0.015, W * 0.01]);
+  ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.font = `600 ${Math.round(W * 0.022)}px system-ui, sans-serif`;
+  ctx.textBaseline = 'top';
+  ctx.fillText('TikTok / Reels UI', r.x, r.y + r.h + W * 0.012);
+  ctx.restore();
+}
+
 // source: the <video> while editing, a decoded VideoSample while exporting
 function drawVideoLayer(view, source = sourceVideo) {
   const { vw, vh, s, tx, ty } = view;
@@ -394,7 +504,10 @@ function drawVideoLayer(view, source = sourceVideo) {
 }
 
 // raw = the untouched recording (no zoom, no texts, no frame)
-function renderFrame(timeSec, { raw = false, source = sourceVideo } = {}) {
+// guides: safe-zone overlay. true = the editor preview (follows the toolbar
+// toggle), 'always' = asked for explicitly (Claude checking a layout).
+// Never part of an export
+function renderFrame(timeSec, { raw = false, source = sourceVideo, guides = false } = {}) {
   const W = previewCanvas.width, H = previewCanvas.height;
   const view = raw ? rawView(W, H) : cameraView(timeSec);
   const framed = !raw && cameraOptions.frame && cameraOptions.frame.enabled;
@@ -406,7 +519,7 @@ function renderFrame(timeSec, { raw = false, source = sourceVideo } = {}) {
   ctx.save();
   if (framed) {
     const r = (cameraOptions.frame.radius ?? 18) * view.U / 1080;
-    drawFrameBackground(W, H);
+    drawBackdrop(W, H, source);
     if (cameraOptions.frame.shadow !== false) {
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.45)';
@@ -424,7 +537,7 @@ function renderFrame(timeSec, { raw = false, source = sourceVideo } = {}) {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, W, H);
     } else {
-      drawFrameBackground(W, H);
+      drawBackdrop(W, H, source);
     }
     ctx.beginPath();
     ctx.rect(vp.x, vp.y, vp.w, vp.h);
@@ -457,12 +570,13 @@ function renderFrame(timeSec, { raw = false, source = sourceVideo } = {}) {
   if (!raw) {
     drawOverlays(ctx, timeSec * 1000, view);
     if (cameraOptions.speedBadge !== false) drawSpeedBadge(ctx, timeSec, view);
+    if (guides === 'always' || (guides && showSafeZones)) drawSafeZoneGuide(W, H);
   }
   lastView = view;
 }
 
 function rerender() {
-  if (sourceVideo.paused && sourceVideo.readyState >= 2) renderFrame(sourceVideo.currentTime);
+  if (sourceVideo.paused && sourceVideo.readyState >= 2) renderFrame(sourceVideo.currentTime, { guides: true });
 }
 
 // --- Video playback loop ---
@@ -476,7 +590,7 @@ function startPlaybackLoop() {
     }
     // Skip cuts / fast-forward speed-ups before drawing this frame
     if (!sourceVideo.ended) applySegmentsAt(sourceVideo.currentTime);
-    renderFrame(sourceVideo.currentTime);
+    renderFrame(sourceVideo.currentTime, { guides: true });
     updateTimeDisplay(sourceVideo.currentTime);
     updateTimelineProgress(sourceVideo.currentTime);
     rafId = requestAnimationFrame(loop);
@@ -685,7 +799,7 @@ function setupVideo(blob) {
     // Draw first frame
     sourceVideo.currentTime = 0;
     sourceVideo.addEventListener('seeked', () => {
-      renderFrame(0);
+      renderFrame(0, { guides: true });
       if (autoExportPending) {
         autoExportPending = false;
         exportVideo();
@@ -859,7 +973,7 @@ function bindSlider(input, setter, unit, decimals = 0) {
       ? parseFloat(input.value).toFixed(decimals) + unit
       : input.value + unit;
     if (!sourceVideo.paused) return;
-    renderFrame(sourceVideo.currentTime);
+    renderFrame(sourceVideo.currentTime, { guides: true });
   });
 }
 
@@ -1007,7 +1121,7 @@ function onDragMove(e) {
       // For end drag, show the end of the zoom out
       sourceVideo.currentTime = (click.t + click.zoomOffset + click.holdDuration + click.zoomOutDuration) / 1000;
     }
-    renderFrame(sourceVideo.currentTime);
+    renderFrame(sourceVideo.currentTime, { guides: true });
   }
 
   renderClickList();
@@ -1032,7 +1146,7 @@ function seekTo(timeSec) {
   playPauseBtn.textContent = '▶';
   sourceVideo.currentTime = Math.max(0, Math.min(timeSec, sourceVideo.duration || 0));
   sourceVideo.addEventListener('seeked', () => {
-    renderFrame(sourceVideo.currentTime);
+    renderFrame(sourceVideo.currentTime, { guides: true });
     updateTimeDisplay(sourceVideo.currentTime);
     updateTimelineProgress(sourceVideo.currentTime);
   }, { once: true });
@@ -1051,7 +1165,7 @@ function togglePlay() {
     isPlaying = false;
     playPauseBtn.textContent = '▶';
     stopPlaybackLoop();
-    renderFrame(sourceVideo.currentTime);
+    renderFrame(sourceVideo.currentTime, { guides: true });
   }
 }
 
@@ -1140,13 +1254,25 @@ function setupDefaultSliders() {
   const aspectModeEl = document.getElementById('aspectModeSelect');
   const onFormatChange = () => {
     pushHistory();
-    cameraOptions.aspect = aspectEl.value;
-    cameraOptions.aspectMode = aspectModeEl.value;
+    setOutputFormat(aspectEl.value, aspectModeEl.value);
     chrome.storage.sync.set({ mcrCameraOptions: cameraOptions });
     projectChanged();
   };
   aspectEl.addEventListener('change', onFormatChange);
   aspectModeEl.addEventListener('change', onFormatChange);
+
+  const safeEl = document.getElementById('safeZoneToggle');
+  chrome.storage.sync.get('mcrShowSafeZones').then(r => {
+    showSafeZones = r.mcrShowSafeZones !== false;
+    syncCameraControls();
+    rerender();
+  });
+  safeEl.addEventListener('click', () => {
+    showSafeZones = !showSafeZones;
+    chrome.storage.sync.set({ mcrShowSafeZones: showSafeZones });
+    syncCameraControls();
+    rerender();
+  });
   mergeEl.addEventListener('pointerdown', pushHistory);
   mergeEl.addEventListener('input', onCameraChange);
 }
@@ -1166,13 +1292,23 @@ function syncDefaultSliders() {
   }
 }
 
+// 'crop' | 'window' | 'fit' | 'fit-blur' (fit on the blurred recording)
+function aspectModeValue() {
+  if (cameraOptions.aspectMode === 'window') return 'window';
+  if (cameraOptions.aspectMode !== 'fit') return 'crop';
+  return cameraOptions.backdrop === 'blur' ? 'fit-blur' : 'fit';
+}
+
 function syncCameraControls() {
   document.getElementById('followCursor').checked = cameraOptions.followCursor;
   document.getElementById('mergeGap').value = cameraOptions.mergeGap;
   document.getElementById('mergeGapVal').textContent = Math.round(cameraOptions.mergeGap) + 'ms';
   document.getElementById('aspectSelect').value = ASPECTS[cameraOptions.aspect] ? cameraOptions.aspect : 'source';
-  document.getElementById('aspectModeSelect').value = cameraOptions.aspectMode === 'fit' ? 'fit' : 'crop';
+  document.getElementById('aspectModeSelect').value = aspectModeValue();
   document.getElementById('aspectModeSelect').disabled = !outputRatio();
+  const safeEl = document.getElementById('safeZoneToggle');
+  safeEl.hidden = !safeZone();
+  safeEl.classList.toggle('active', showSafeZones);
 }
 
 // --- Init ---

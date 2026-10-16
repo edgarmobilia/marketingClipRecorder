@@ -161,6 +161,8 @@ function serializeCamera() {
     speed_badge: cameraOptions.speedBadge !== false,
     aspect: ASPECTS[cameraOptions.aspect] ? cameraOptions.aspect : 'source',
     aspect_mode: cameraOptions.aspectMode === 'fit' ? 'fit' : 'crop',
+    backdrop: cameraOptions.backdrop === 'blur' ? 'blur' : 'color',
+    ...(cameraOptions.aspectMode === 'window' && { window: windowOptions() }),
     frame: { ...cameraOptions.frame },
   };
 }
@@ -294,10 +296,11 @@ async function seekExact(timeSec) {
   }
 }
 
-async function renderAt(timeSec, rendered) {
+// safeZones: overlay the TikTok / Reels UI area so a layout can be checked
+async function renderAt(timeSec, rendered, safeZones = false) {
   await fontsReady();
   await seekExact(timeSec);
-  renderFrame(sourceVideo.currentTime, { raw: !rendered });
+  renderFrame(sourceVideo.currentTime, { raw: !rendered, guides: rendered && safeZones ? 'always' : false });
   updateTimeDisplay(sourceVideo.currentTime);
   updateTimelineProgress(sourceVideo.currentTime);
 }
@@ -328,6 +331,9 @@ const BRIDGE_METHODS = {
         height: sourceVideo.videoHeight,
         output_width: previewCanvas.width,
         output_height: previewCanvas.height,
+        // Fractions of the output frame covered by the TikTok / Reels UI;
+        // keep texts and key UI out of them (null = format has none)
+        safe_zone: safeZone(),
         current_time_sec: round(sourceVideo.currentTime),
         cursor_samples: moves.length,
         output_duration_sec: round(outputDurationMs() / 1000),
@@ -348,12 +354,12 @@ const BRIDGE_METHODS = {
     };
   },
 
-  async get_frame({ time_sec = sourceVideo.currentTime, rendered = true, max_width = 1280 }) {
-    await renderAt(time_sec, rendered);
+  async get_frame({ time_sec = sourceVideo.currentTime, rendered = true, max_width = 1280, safe_zones = false }) {
+    await renderAt(time_sec, rendered, safe_zones);
     return { time_sec: round(sourceVideo.currentTime), mime: 'image/jpeg', image: canvasToJpeg(scaledCopy(max_width)) };
   },
 
-  async get_contact_sheet({ times, count = 12, columns = 4, rendered = true, thumb_width = 480 }) {
+  async get_contact_sheet({ times, count = 12, columns = 4, rendered = true, thumb_width = 480, safe_zones = false }) {
     const dur = sourceVideo.duration;
     if (!Array.isArray(times) || !times.length) {
       const n = Math.max(1, Math.min(48, count));
@@ -377,7 +383,7 @@ const BRIDGE_METHODS = {
     g.imageSmoothingQuality = 'high';
 
     for (let i = 0; i < times.length; i++) {
-      await renderAt(times[i], rendered);
+      await renderAt(times[i], rendered, safe_zones);
       const x = (i % cols) * tw, y = Math.floor(i / cols) * (th + labelH);
       g.drawImage(previewCanvas, x, y + labelH, tw, th);
       g.fillStyle = '#ddd';
@@ -415,7 +421,8 @@ const BRIDGE_METHODS = {
   async set_camera(p) {
     if (p.motion !== undefined && !MOTION_PRESETS[p.motion]) throw new Error(`motion must be one of ${Object.keys(MOTION_PRESETS).join(', ')}`);
     if (p.aspect !== undefined && !(p.aspect in ASPECTS)) throw new Error(`aspect must be one of ${Object.keys(ASPECTS).join(', ')}`);
-    if (p.aspect_mode !== undefined && !['crop', 'fit'].includes(p.aspect_mode)) throw new Error('aspect_mode must be crop or fit');
+    if (p.aspect_mode !== undefined && !['crop', 'window', 'fit'].includes(p.aspect_mode)) throw new Error('aspect_mode must be crop, window or fit');
+    if (p.backdrop !== undefined && !['color', 'blur'].includes(p.backdrop)) throw new Error('backdrop must be color or blur');
     const f = p.frame || {};
     if (f.background !== undefined) {
       const bg = f.background;
@@ -430,8 +437,17 @@ const BRIDGE_METHODS = {
     if (p.zoom_intensity !== undefined) cameraOptions.zoomIntensity = Math.min(2, Math.max(0.5, p.zoom_intensity));
     if (p.motion_blur !== undefined) cameraOptions.motionBlur = !!p.motion_blur;
     if (p.speed_badge !== undefined) cameraOptions.speedBadge = !!p.speed_badge;
-    if (p.aspect !== undefined) cameraOptions.aspect = p.aspect;
-    if (p.aspect_mode !== undefined) cameraOptions.aspectMode = p.aspect_mode;
+    // Through setOutputFormat so texts switch to that format's layout
+    if (p.aspect !== undefined) setOutputFormat(p.aspect);
+    if (p.aspect_mode !== undefined) {
+      cameraOptions.aspectMode = p.aspect_mode;
+      // A window floats on the blurred recording unless told otherwise
+      if (p.aspect_mode === 'window' && p.backdrop === undefined) cameraOptions.backdrop = 'blur';
+    }
+    if (p.backdrop !== undefined) cameraOptions.backdrop = p.backdrop;
+    if (p.window) {
+      cameraOptions.window = { ...windowOptions(), ...stripUndefined({ ratio: p.window.ratio, y: p.window.y }) };
+    }
     const fr = cameraOptions.frame;
     if (f.enabled !== undefined) fr.enabled = !!f.enabled;
     if (f.padding !== undefined) fr.padding = Math.min(0.2, Math.max(0, f.padding));
@@ -569,8 +585,18 @@ const BRIDGE_METHODS = {
     return { undone: undo() };
   },
 
-  async export_video() {
-    exportVideo();
-    return { started: true, duration_sec: round(sourceVideo.duration) };
+  async export_video({ formats } = {}) {
+    if (exportJob) throw new Error('An export is already running');
+    if (!formats || !formats.length) {
+      exportVideo({ label: cameraOptions.aspect && cameraOptions.aspect !== 'source' ? cameraOptions.aspect.replace(':', 'x') : '' });
+      return { started: true, format: cameraOptions.aspect || 'source', duration_sec: round(outputDurationMs() / 1000) };
+    }
+    const bad = formats.filter(f => !(f in ASPECTS));
+    if (bad.length) throw new Error(`Unknown format(s) ${bad.join(', ')}; use ${Object.keys(ASPECTS).join(', ')}`);
+    exportFormats([...new Set(formats)]);
+    return {
+      started: true, formats, duration_sec: round(outputDurationMs() / 1000),
+      note: 'One MP4 per format, rendered one after another; each uses that format\'s own text layout and mode.',
+    };
   },
 };
