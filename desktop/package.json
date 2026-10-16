@@ -1,0 +1,18 @@
+{
+  "name": "marketing-clip-recorder-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows desktop recorder for Marketing Clip Recorder: captures the whole screen (native selects, dialogs, new windows) and opens the clip editor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "selftest": "electron . --selftest"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.8.0"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
+  }
+}

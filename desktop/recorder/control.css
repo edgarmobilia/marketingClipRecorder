@@ -1,0 +1,108 @@
+:root {
+  --bg: #15161a;
+  --panel: #1e2026;
+  --border: #2c2f37;
+  --text: #e8e9ec;
+  --muted: #8b8f99;
+  --accent: #5b8cff;
+  --rec: #e03c3c;
+}
+
+* { box-sizing: border-box; }
+
+/* .setup / .pill set display:flex, which would otherwise beat the hidden attribute */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+.setup { padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+
+/* Frameless window: the header is the title bar */
+header { display: flex; align-items: center; gap: 10px; -webkit-app-region: drag; margin: -20px -24px 0; padding: 14px 12px 0 24px; }
+.close {
+  -webkit-app-region: no-drag;
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  width: 32px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.close:hover { background: var(--panel); color: var(--text); }
+h1 { font-size: 16px; font-weight: 600; margin: 0; }
+h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+
+.logo-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--rec); }
+
+.sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.source {
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.source img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; display: block; background: #000; }
+.source span { display: block; margin-top: 6px; font-size: 12px; }
+.source.selected { border-color: var(--accent); }
+
+.options { display: flex; flex-direction: column; gap: 8px; }
+.options label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+footer { display: flex; align-items: center; gap: 16px; margin-top: 4px; }
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-rec { background: var(--rec); border-color: var(--rec); color: #fff; }
+.btn-stop { padding: 6px 12px; font-size: 13px; }
+
+.muted { color: var(--muted); margin: 0; }
+.small { font-size: 12px; }
+.error { color: #ff7b7b; margin: 0; font-size: 13px; }
+
+kbd {
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+  font: 11px "Segoe UI", sans-serif;
+}
+
+/* While recording: a small pill the capture never sees (content protection) */
+.pill {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px 0 16px;
+  -webkit-app-region: drag;
+}
+.pill .btn { -webkit-app-region: no-drag; margin-left: auto; }
+.pill-text { font-variant-numeric: tabular-nums; font-weight: 600; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: #f0a020; }
+.rec-dot.live { background: var(--rec); animation: blink 1.2s infinite; }
+
+@keyframes blink { 50% { opacity: .3; } }

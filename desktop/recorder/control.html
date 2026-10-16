@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; media-src 'self' blob: mediastream:">
+  <title>Marketing Clip Recorder</title>
+  <link rel="stylesheet" href="control.css">
+</head>
+<body>
+  <main id="setup" class="setup">
+    <header>
+      <div class="logo-dot"></div>
+      <h1>Marketing Clip Recorder</h1>
+      <button id="closeBtn" class="close" title="Cerrar">✕</button>
+    </header>
+
+    <section>
+      <h2>Qué grabar</h2>
+      <div id="sources" class="sources"><p class="muted">Buscando pantallas…</p></div>
+      <p class="muted small">Se graba la pantalla entera: desplegables nativos, diálogos y ventanas nuevas salen en el vídeo.</p>
+    </section>
+
+    <section class="options">
+      <label><input type="checkbox" id="optAudio"> Grabar audio del sistema</label>
+      <label><input type="checkbox" id="optCountdown"> Cuenta atrás 3-2-1</label>
+      <label><input type="checkbox" id="optAutoExport"> Exportar automáticamente al terminar</label>
+      <label id="hideCursorLabel"><input type="checkbox" id="optHideCursor"> Grabar sin el cursor de Windows <span id="hideCursorNote" class="muted small"></span></label>
+    </section>
+
+    <footer>
+      <button id="recordBtn" class="btn btn-rec" disabled>● Grabar</button>
+      <span class="muted small">Atajo: <kbd>Alt</kbd> + <kbd>S</kbd></span>
+    </footer>
+    <p id="error" class="error" hidden></p>
+  </main>
+
+  <main id="pill" class="pill" hidden>
+    <span id="recDot" class="rec-dot"></span>
+    <span id="pillText" class="pill-text">3</span>
+    <button id="stopBtn" class="btn btn-stop" title="Parar (Alt+S)">■ Parar</button>
+  </main>
+
+  <script src="control.js"></script>
+</body>
+</html>

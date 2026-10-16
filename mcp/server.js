@@ -49,6 +49,8 @@ let nextCallId = 1;
 const pending = new Map();  // id -> { resolve, reject, timer } (editor calls, or upstream calls when proxy)
 
 function isAllowedOrigin(origin) {
+  // The Windows desktop app (desktop/) serves the same editor from app://local
+  if (origin === 'app://local') return true;
   if (!origin || !origin.startsWith('chrome-extension://')) return false;
   return !EXTENSION_ID || origin === `chrome-extension://${EXTENSION_ID}`;
 }
