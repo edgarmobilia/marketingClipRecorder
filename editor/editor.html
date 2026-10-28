@@ -15,6 +15,8 @@
       <span class="claude-status" id="claudeStatus" title="Start Claude Code in the project folder to let Claude edit this clip">Claude: offline</span>
     </div>
     <div class="toolbar-right">
+      <button id="openVideoBtn" class="btn" title="Edit any video file (or drop it on the editor)">Open video…</button>
+      <input type="file" id="openVideoInput" accept="video/*,.mkv,.mov,.m4v" hidden>
       <div class="format-picker" title="Output format">
         <select id="aspectSelect" class="btn">
           <option value="source">Original</option>
@@ -51,6 +53,7 @@
       <div class="sidebar-tabs">
         <button class="sidebar-tab active" data-tab="events">Zooms <span class="badge" id="clickCount">0</span></button>
         <button class="sidebar-tab" data-tab="texts">Texts <span class="badge" id="textCount">0</span></button>
+        <button class="sidebar-tab" data-tab="subtitles" title="Subtitles">Subs <span class="badge" id="subtitleCount">0</span></button>
         <button class="sidebar-tab" data-tab="cuts">Cuts <span class="badge" id="segmentCount">0</span></button>
         <button class="sidebar-tab" data-tab="cursor">Cursor</button>
       </div>
@@ -117,6 +120,21 @@
         <div id="textList" class="click-list"></div>
       </div>
 
+      <!-- Subtitles: one timed track, burned into the export -->
+      <div class="tab-panel hidden" id="panel-subtitles">
+        <div class="panel-section" id="subStyle"></div>
+        <div class="panel-section">
+          <div class="chips">
+            <button id="subAddBtn" class="chip">+ At the playhead</button>
+            <button id="subImportBtn" class="chip">Import .srt</button>
+            <button id="subDownloadBtn" class="chip">⬇ .srt</button>
+            <button id="subClearBtn" class="chip">Clear</button>
+          </div>
+          <input type="file" id="subFileInput" accept=".srt,.vtt,text/vtt" hidden>
+        </div>
+        <div id="subtitleList" class="click-list"></div>
+      </div>
+
       <!-- Cursor & click effects, drawn in post -->
       <div class="tab-panel hidden" id="panel-cursor">
         <div class="panel-section" id="cursorPanel"></div>
@@ -159,6 +177,7 @@
       <div class="segment-markers" id="segmentMarkers"></div>
       <div class="click-markers" id="clickMarkers"></div>
       <div class="text-markers" id="textMarkers"></div>
+      <div class="subtitle-markers" id="subtitleMarkers"></div>
     </div>
   </div>
 
@@ -182,6 +201,7 @@
   <script src="cursor.js"></script>
   <script src="shots.js"></script>
   <script src="analysis.js"></script>
+  <script src="subtitles.js"></script>
   <script src="export.js"></script>
   <script src="bridge.js"></script>
 </body>

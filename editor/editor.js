@@ -13,6 +13,7 @@ let isDragging = false;
 let dragInfo = null; // { idx, type, initialValue, initialT }
 let autoExportPending = false;
 let editorReady = false;   // video metadata loaded, safe to render / answer the MCP bridge
+let editorEmpty = false;   // nothing to edit yet (no recording, no opened video)
 
 // Default zoom settings (used as initial values per click, remembered across sessions)
 // Gentle by default: a moderate close-up that eases in and out slowly reads
@@ -610,6 +611,7 @@ function renderFrame(timeSec, { raw = false, source = sourceVideo, guides = fals
 
   if (!raw) {
     drawOverlays(ctx, timeSec * 1000, view);
+    drawSubtitles(ctx, timeSec * 1000, view);
     if (cameraOptions.speedBadge !== false) drawSpeedBadge(ctx, timeSec, view);
     if (guides === 'always' || (guides && showSafeZones)) drawSafeZoneGuide(W, H);
   }
@@ -714,7 +716,10 @@ async function loadData() {
 // --- Project state: snapshot / persistence / undo ---
 
 function snapshot() {
-  return JSON.parse(JSON.stringify({ clicks, overlays, cameraOptions, nextOverlayId, segments, nextSegmentId, cursorFx, shots, nextShotId }));
+  return JSON.parse(JSON.stringify({
+    clicks, overlays, cameraOptions, nextOverlayId, segments, nextSegmentId, cursorFx, shots, nextShotId,
+    subtitles, subtitleStyle, nextSubtitleId,
+  }));
 }
 
 function applySnapshot(snap) {
@@ -728,6 +733,9 @@ function applySnapshot(snap) {
   nextShotId = snap.nextShotId || shots.length + 1;
   cursorFx = { ...CURSOR_DEFAULTS, ...snap.cursorFx };
   nextSegmentId = snap.nextSegmentId || segments.length + 1;
+  subtitles = (snap.subtitles || []).map(normalizeCue);
+  subtitleStyle = { ...SUBTITLE_STYLE_DEFAULTS, ...snap.subtitleStyle };
+  nextSubtitleId = snap.nextSubtitleId || subtitles.length + 1;
 }
 
 let saveTimer = null;
@@ -765,6 +773,8 @@ function projectChanged() {
   renderSegmentList();
   renderSegmentMarkers();
   renderCursorPanel();
+  renderSubtitlePanel();
+  renderSubtitleMarkers();
   rerender();
   saveProject();
 }
@@ -804,7 +814,7 @@ async function loadVideoFromIndexedDB() {
     const req = tx.objectStore('recordings').get('last');
     req.onsuccess = () => {
       if (req.result) resolve(req.result);
-      else reject(new Error('No recording found.'));
+      else reject(new Error('No recording yet. Record a clip, or open / drop any video file here.'));
     };
     req.onerror = () => reject(req.error);
   });
@@ -861,6 +871,8 @@ function setupVideo(blob) {
     renderSegmentList();
     renderSegmentMarkers();
     renderCursorPanel();
+    renderSubtitlePanel();
+    renderSubtitleMarkers();
     editorReady = true;
   }, { once: true });
 
@@ -1203,6 +1215,9 @@ function seekTo(timeSec) {
 // --- Playback controls ---
 function togglePlay() {
   if (sourceVideo.paused) {
+    // Stopped at the end of the clip: play again from the start
+    const end = clipEndSec();
+    if (end !== null && sourceVideo.currentTime >= end - 0.05) sourceVideo.currentTime = firstPlayableSec();
     applySegmentsAt(sourceVideo.currentTime);
     sourceVideo.play();
     isPlaying = true;
@@ -1236,7 +1251,7 @@ document.addEventListener('keydown', (e) => {
 rewindBtn.addEventListener('click', () => seekTo(0));
 
 timeline.addEventListener('click', (e) => {
-  if (e.target.closest('.text-bar') || e.target.closest('.segment-band')) return;
+  if (e.target.closest('.text-bar') || e.target.closest('.segment-band') || e.target.closest('.subtitle-bar')) return;
   const rect = timeline.getBoundingClientRect();
   const pct = (e.clientX - rect.left) / rect.width;
   seekTo(pct * (sourceVideo.duration || 0));
@@ -1359,6 +1374,68 @@ function syncCameraControls() {
   safeEl.classList.toggle('active', showSafeZones);
 }
 
+// --- Open any video ---
+// A finished or edited video can be loaded instead of a recording: it gets a
+// fresh project (no clicks or cursor track, so the camera stays wide unless
+// shots are added). The editor reloads to start clean.
+
+const VIDEO_EXT = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'video/x-matroska': 'mkv' };
+
+// reloadDelayMs: lets the Claude bridge answer before the page goes away
+async function openVideoFile(blob, name = '', reloadDelayMs = 0) {
+  const type = blob.type || (/\.webm$/i.test(name) ? 'video/webm' : /\.mov$/i.test(name) ? 'video/quicktime' : 'video/mp4');
+  if (!type.startsWith('video/')) throw new Error(`"${name || 'That file'}" is not a video.`);
+  if (!document.createElement('video').canPlayType(type) && type !== 'video/quicktime') {
+    throw new Error(`This browser cannot play ${type} videos; convert it to MP4 (H.264) or WebM first.`);
+  }
+  await idbPut('last', new Blob([blob], { type }));
+  await chrome.storage.session.set({
+    mcrEditorClicks: [], mcrEditorMoves: [], mcrEditorMimeType: type,
+    mcrEditorExt: VIDEO_EXT[type] || 'mp4', mcrEditorFresh: true, mcrEditorSourceName: name,
+  });
+  setTimeout(() => location.reload(), reloadDelayMs);
+}
+
+function hasEdits() {
+  return overlays.length || segments.length || shots.length || subtitles.length || undoStack.length;
+}
+
+async function pickAndOpen(file) {
+  if (!file) return;
+  if (hasEdits() && !confirm('Open this video instead of the current clip? The current edits will be lost.')) return;
+  try {
+    await openVideoFile(file, file.name);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+const openVideoInput = document.getElementById('openVideoInput');
+document.getElementById('openVideoBtn').addEventListener('click', () => openVideoInput.click());
+openVideoInput.addEventListener('change', () => {
+  const f = openVideoInput.files[0];
+  openVideoInput.value = '';
+  pickAndOpen(f);
+});
+
+// Drop a video file anywhere on the editor
+document.addEventListener('dragover', (e) => {
+  if ([...(e.dataTransfer?.items || [])].some(i => i.kind === 'file')) {
+    e.preventDefault();
+    document.body.classList.add('dropping');
+  }
+});
+document.addEventListener('dragleave', (e) => {
+  if (!e.relatedTarget) document.body.classList.remove('dropping');
+});
+document.addEventListener('drop', (e) => {
+  document.body.classList.remove('dropping');
+  const f = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v)$/i.test(f.name));
+  if (!f) return;
+  e.preventDefault();
+  pickAndOpen(f);
+});
+
 // --- Init ---
 // Waits for overlays.js / texts.js / export.js / bridge.js, which load after this file
 document.addEventListener('DOMContentLoaded', () => loadData()
@@ -1368,9 +1445,13 @@ document.addEventListener('DOMContentLoaded', () => loadData()
     setupTextPanel();
     setupSegmentsPanel();
     setupCursorPanel();
+    setupSubtitlesPanel();
     setupVideo(blob);
     startClaudeBridge();
   })
   .catch(err => {
-    loadingMsg.textContent = 'Error: ' + err.message;
+    loadingMsg.textContent = err.message;
+    // Still reachable from Claude, which can open a video into the empty editor
+    editorEmpty = true;
+    startClaudeBridge();
   }));

@@ -167,6 +167,14 @@ function applySegmentsAt(timeSec) {
   const tMs = timeSec * 1000;
   const sg = segments.find(s => tMs >= s.start && tMs < s.end);
   if (sg && sg.speed === 0) {
+    // A cut that runs to the end is where the clip ends: stop on the last kept
+    // frame. Jumping to sg.end would show the recording's final frame first
+    if (sg.end >= (sourceVideo.duration || Infinity) * 1000 - 50) {
+      sourceVideo.pause();
+      sourceVideo.currentTime = Math.max(0, sg.start / 1000 - 0.001);
+      if (sourceVideo.playbackRate !== 1) sourceVideo.playbackRate = 1;
+      return;
+    }
     sourceVideo.currentTime = sg.end / 1000;
     if (sourceVideo.playbackRate !== 1) sourceVideo.playbackRate = 1;
     return;
@@ -182,6 +190,13 @@ function firstPlayableSec() {
     if (sg.speed === 0 && sg.start <= t + 1 && sg.end > t) t = sg.end;
   }
   return t / 1000;
+}
+
+// Start of a cut that runs to the end of the recording (seconds), or null
+function clipEndSec() {
+  const durMs = (sourceVideo.duration || Infinity) * 1000;
+  const sg = segments.find(s => s.speed === 0 && s.end >= durMs - 50);
+  return sg ? sg.start / 1000 : null;
 }
 
 function resetPlaybackRate() {

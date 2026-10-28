@@ -288,7 +288,13 @@ ipcMain.handle('nocursor-available', () => capture.probe());
 ipcMain.handle('capture-start', async (e, { displayId, bitrate }) => {
   // ddagrab numbers monitors like Windows does; with one monitor it is always 0
   const outputIdx = Math.max(0, screen.getAllDisplays().findIndex(d => d.id === displayId));
-  const at = await capture.start({ outputIdx, bitrate });
+  // gdigrab (Remote Desktop) needs the monitor's rectangle in physical pixels
+  const d = displayById(displayId);
+  const rect = {
+    x: Math.round(d.bounds.x * d.scaleFactor), y: Math.round(d.bounds.y * d.scaleFactor),
+    width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor),
+  };
+  const at = await capture.start({ outputIdx, bitrate, rect });
   if (recording) recording.startedAt = at;
   return at;
 });

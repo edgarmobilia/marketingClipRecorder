@@ -30,12 +30,32 @@ const ENCODERS = [
 
 const grab = (outputIdx, fps) => `ddagrab=output_idx=${outputIdx}:framerate=${fps}:draw_mouse=0`;
 
+// Remote Desktop has no Desktop Duplication (ddagrab hangs or fails), but GDI
+// capture works there. Slower, so it records at a lower frame rate, on the CPU.
+const GDI_FPS = 30;
+const GDI = { name: 'gdigrab', args: () => ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p'] };
+const gdiInput = (fps, r) => ['-f', 'gdigrab', '-framerate', String(fps), '-draw_mouse', '0',
+  ...(r ? ['-offset_x', String(r.x), '-offset_y', String(r.y), '-video_size', `${r.width}x${r.height}`] : []),
+  '-i', 'desktop'];
+const isRemoteSession = () => /^rdp/i.test(process.env.SESSIONNAME || '') || process.env.MCR_CAPTURE === 'gdigrab';
+
+function probeGdi() {
+  const r = spawnSync(ffmpegBin(), [
+    '-hide_banner', '-loglevel', 'error', ...gdiInput(GDI_FPS, { x: 0, y: 0, width: 64, height: 64 }),
+    '-frames:v', '3', ...GDI.args(), '-f', 'null', '-',
+  ], { windowsHide: true, timeout: 15_000 });
+  return r.status === 0 ? { ok: true, encoder: GDI.name } : null;
+}
+
 // Finds a working ffmpeg + encoder by encoding a few frames (once per run)
 function probe() {
   if (availability) return availability;
   const version = spawnSync(ffmpegBin(), ['-hide_banner', '-version'], { windowsHide: true });
   if (version.error || version.status !== 0) {
     return (availability = { ok: false, error: 'ffmpeg no está instalado (winget install Gyan.FFmpeg)' });
+  }
+  if (isRemoteSession()) {
+    return (availability = probeGdi() || { ok: false, error: 'ffmpeg no puede capturar la pantalla (gdigrab)' });
   }
   for (const enc of ENCODERS) {
     const r = spawnSync(ffmpegBin(), [
@@ -45,23 +65,28 @@ function probe() {
     ], { windowsHide: true, timeout: 15_000 });
     if (r.status === 0) return (availability = { ok: true, encoder: enc.name });
   }
-  return (availability = { ok: false, error: 'ffmpeg no puede capturar la pantalla (ddagrab)' });
+  return (availability = probeGdi() || { ok: false, error: 'ffmpeg no puede capturar la pantalla (ddagrab)' });
 }
 
 let current = null;   // { proc, file, startAt, exited }
 
 // Starts recording; resolves with the wall-clock time of the first frame
-function start({ outputIdx = 0, bitrate = 20_000_000 }) {
+function start({ outputIdx = 0, bitrate = 20_000_000, rect = null }) {
   const info = probe();
   if (!info.ok) return Promise.reject(new Error(info.error));
-  const enc = ENCODERS.find(e => e.name === info.encoder);
   const file = path.join(os.tmpdir(), `mcr-capture-${Date.now()}.mp4`);
   const b = String(bitrate);
+  let input;
+  if (info.encoder === GDI.name) {
+    input = [...gdiInput(GDI_FPS, rect), ...GDI.args()];
+  } else {
+    const enc = ENCODERS.find(e => e.name === info.encoder);
+    input = ['-filter_complex', grab(outputIdx, FPS) + enc.filter, ...enc.args(b)];
+  }
 
   const proc = spawn(ffmpegBin(), [
     '-hide_banner', '-loglevel', 'error', '-y',
-    '-filter_complex', grab(outputIdx, FPS) + enc.filter,
-    ...enc.args(b),
+    ...input,
     '-progress', 'pipe:1', '-stats_period', '0.25', '-nostats',
     file,
   ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });

@@ -14,6 +14,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as z from 'zod';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { transcribePcm, wordsToCues, pcm16ToWav, pcm16ToFloat32 } from './transcribe.js';
 
 const PORT = Number(process.env.MCR_BRIDGE_PORT) || 47821;
 const EXTENSION_ID = process.env.MCR_EXTENSION_ID || null;
@@ -364,11 +367,30 @@ CURSOR
   leave only the original. Arrow + subtle ripple is a safe default; the glove
   ("hand") suits playful brands. Turn off click effects on clicks you un-zoomed if they distract.
 
+SUBTITLES (a separate track from the texts: one look, timed cues, burned into the export, also saved as .srt)
+- Video with speech (voice-over, someone talking): transcribe — it runs Whisper locally and fills the track
+  with word-timed cues. Pass language when you know it ("es", "en"…). If your model can listen to audio you
+  may use get_audio instead and write the cues yourself; Claude cannot, so use transcribe.
+- Then READ every cue and fix it with update_subtitles: brand/product names, numbers, punctuation, words the
+  model misheard (check against what the frames show). Keep cues ≤ 42 characters (2 short lines), 1–6 s each,
+  split at natural pauses. Changing a cue's text keeps it in sync (word times are re-spread over the cue).
+- No speech: subtitles are usually not wanted (use texts). If the user asks anyway, write short narration cues
+  yourself with set_subtitles from what happens (events, frames).
+- Look (set_subtitle_style): "box" for product demos / tutorials, "clean" over busy footage, "social" (big,
+  bold, the spoken word highlighted) for TikTok / Reels. They sit above the bottom edge — or the safe zone in
+  9:16 — automatically. Keep them clear of captions / lower-thirds at the bottom: move those texts up, or
+  set subtitle y. Verify with get_frame (rendered=true) on 2–3 cues.
+
+OPENED VIDEOS (get_project recording.imported = true)
+- The user may open any finished/edited video instead of a recording (Open video… or drag & drop; you can do it
+  with open_video and a file path). There are no clicks or cursor track, so the camera stays wide: frame
+  moments with add_shot if needed, and use cuts, texts, subtitles and output formats as usual.
+
 Everything is data: never edit the editor's source code to change a look. If something cannot be expressed with the
 tools, say what is missing.
 `.trim();
 
-const server = new McpServer({ name: 'clip-editor', version: '1.2.0' }, { instructions: DIRECTOR_GUIDE });
+const server = new McpServer({ name: 'clip-editor', version: '1.3.0' }, { instructions: DIRECTOR_GUIDE });
 
 const STYLE_HELP =
   'Styles are layout presets with a sober default look: "title" (statement on a solid dark card, left-aligned ' +
@@ -618,7 +640,8 @@ server.registerTool('apply_edits', {
   description:
     'Runs several editor operations in order as ONE undo step. ops: [{ method, params }] where method is any ' +
     'editing tool name (update_events, set_camera, add_text, update_text, update_texts, remove_text, add_segment, ' +
-    'update_segment, remove_segment, add_shot, update_shot, remove_shot, set_cursor) and params its arguments. ' +
+    'update_segment, remove_segment, add_shot, update_shot, remove_shot, set_cursor, set_subtitles, ' +
+    'update_subtitles, set_subtitle_style) and params its arguments. ' +
     'Returns each result or error; failed ops do not stop the rest.',
   inputSchema: {
     ops: z.array(z.object({ method: z.string(), params: z.record(z.string(), z.any()).optional() })).min(1).max(200),
@@ -741,11 +764,171 @@ server.registerTool('export_video', {
     'Starts rendering the final MP4 in the editor (frame-exact offline render at 60 fps; falls back to ' +
     'real-time recording if the browser cannot). The file is downloaded by Chrome when done. Keep the editor ' +
     'tab open. Only do this when the user asks. formats: export several output formats one after another (one ' +
-    'MP4 each, named by format), each with its own text layout and mode; omit to export the current format.',
+    'MP4 each, named by format), each with its own text layout and mode; omit to export the current format. ' +
+    'subtitles_srt: also download the subtitles as an .srt file (timed to the exported video, after cuts).',
   inputSchema: {
     formats: z.array(z.enum(['source', '16:9', '9:16', '1:1', '4:5'])).max(5).optional(),
+    subtitles_srt: z.boolean().optional(),
   },
 }, (args) => run(async () => asText(await callEditor('export_video', args))));
+
+// --- Subtitles ---
+
+const SUBTITLE_HELP =
+  'Cue times are SOURCE time (like every other edit), so cuts and speed-ups keep them in sync. ' +
+  'get_project lists the cues (id, start_sec, end_sec, text) and the style.';
+
+const cueSchema = z.object({
+  start_sec: z.number().min(0),
+  end_sec: z.number().min(0),
+  text: z.string().describe('One or two short lines; ≤ 42 characters reads best'),
+  words: z.array(z.object({ text: z.string(), start_sec: z.number(), end_sec: z.number() })).optional()
+    .describe('Optional word timings (for the spoken-word highlight)'),
+});
+
+const SILENT_PEAK = 0.003;
+const r3 = v => Math.round(v * 1000) / 1000;
+
+server.registerTool('transcribe', {
+  title: 'Transcribe speech into subtitles',
+  description:
+    'Transcribes the video\'s speech locally (Whisper on this machine; nothing is uploaded) and, by default, ' +
+    'replaces the subtitle track (or only the cues inside start_sec–end_sec) with word-timed cues. Returns the ' +
+    'cues so you can proofread them and fix names, numbers and punctuation with update_subtitles. The first run ' +
+    'downloads the model (base ≈ 80 MB, small ≈ 250 MB); a minute of audio takes roughly 20–60 s on the CPU. ' +
+    SUBTITLE_HELP,
+  inputSchema: {
+    language: z.string().optional().describe('Spoken language, e.g. "es", "en", "spanish". Omit to auto-detect'),
+    model: z.enum(['tiny', 'base', 'small']).optional().describe('Default "small" (best); "base" is ~2× faster'),
+    start_sec: z.number().min(0).optional().describe('Only this part of the video (source time)'),
+    end_sec: z.number().min(0).optional(),
+    max_chars: z.number().int().min(16).max(90).optional().describe('Longest cue, default 42 (use ~28 for big social captions)'),
+    apply: z.boolean().optional().describe('Default true: put the cues on the track. false = only return them'),
+  },
+}, (args) => run(async () => {
+  const a = await callEditor('get_audio_pcm', { start_sec: args.start_sec ?? 0, end_sec: args.end_sec });
+  if (a.peak < SILENT_PEAK) return asText({ cues: [], note: 'The audio is silent in that range: there is no speech to transcribe.' });
+  const pcm = pcm16ToFloat32(Buffer.from(a.pcm16_base64, 'base64'));
+  const t0 = Date.now();
+  const { text, words } = await transcribePcm(pcm, { model: args.model || 'small', language: args.language || null });
+  const shift = w => ({ ...w, start: w.start + a.start_sec, end: w.end + a.start_sec });
+  const cues = wordsToCues(words.map(shift), { maxChars: args.max_chars || 42 });
+  const seconds = Math.round((Date.now() - t0) / 100) / 10;
+  if (!cues.length) return asText({ cues: [], text, note: 'No speech recognised.' });
+  if (args.apply === false) {
+    return asText({ seconds, text, cues: cues.map(c => ({ start_sec: r3(c.start), end_sec: r3(c.end), text: c.text })) });
+  }
+  const ranged = args.start_sec !== undefined || args.end_sec !== undefined;
+  const result = await callEditor('set_subtitles', {
+    cues: cues.map(c => ({
+      start_sec: r3(c.start), end_sec: r3(c.end), text: c.text,
+      words: c.words.map(w => ({ text: w.text, start_sec: r3(w.start), end_sec: r3(w.end) })),
+    })),
+    ...(ranged && { from_sec: a.start_sec, to_sec: a.end_sec }),
+  });
+  return asText({
+    seconds, applied: true, cues: result.cues, style: result.style,
+    next: 'Proofread every cue (names, numbers, punctuation) and fix them with update_subtitles; then check 2–3 rendered frames.',
+  });
+}));
+
+server.registerTool('get_audio', {
+  title: 'Listen to the audio',
+  description:
+    'Returns a stretch of the soundtrack as audio (16 kHz mono WAV) for models that can listen. Claude cannot ' +
+    'hear audio — use transcribe instead. Max 120 s per call.',
+  inputSchema: {
+    start_sec: z.number().min(0).optional().describe('Default 0'),
+    end_sec: z.number().min(0).optional().describe('Default start + 120 s'),
+  },
+  annotations: { readOnlyHint: true },
+}, (args) => run(async () => {
+  const start = args.start_sec ?? 0;
+  const end = Math.min(args.end_sec ?? start + 120, start + 120);
+  const a = await callEditor('get_audio_pcm', { start_sec: start, end_sec: end });
+  const wav = pcm16ToWav(Buffer.from(a.pcm16_base64, 'base64'), a.sample_rate);
+  return {
+    content: [
+      { type: 'audio', data: wav.toString('base64'), mimeType: 'audio/wav' },
+      { type: 'text', text: JSON.stringify({ start_sec: a.start_sec, end_sec: a.end_sec, silent: a.peak < SILENT_PEAK }) },
+    ],
+  };
+}));
+
+server.registerTool('set_subtitles', {
+  title: 'Write subtitles',
+  description:
+    'Replaces the whole subtitle track with these cues — or, with from_sec/to_sec, only the cues in that range. ' +
+    'Use it to write subtitles yourself (no speech, or another transcript); after transcribe use update_subtitles. ' +
+    `Undoable. ${SUBTITLE_HELP}`,
+  inputSchema: {
+    cues: z.array(cueSchema).max(2000),
+    from_sec: z.number().min(0).optional(),
+    to_sec: z.number().min(0).optional(),
+  },
+}, (args) => run(async () => asText(await callEditor('set_subtitles', args))));
+
+server.registerTool('update_subtitles', {
+  title: 'Fix subtitles',
+  description:
+    'Edits cues by id (text and/or times) and removes others, in one undo step. Editing the text keeps the ' +
+    `spoken-word highlight in sync. ${SUBTITLE_HELP}`,
+  inputSchema: {
+    updates: z.array(z.object({
+      id: z.string(),
+      text: z.string().optional(),
+      start_sec: z.number().min(0).optional(),
+      end_sec: z.number().min(0).optional(),
+    })).optional(),
+    remove: z.array(z.string()).optional().describe('Cue ids to delete'),
+  },
+}, (args) => run(async () => asText(await callEditor('update_subtitles', args))));
+
+server.registerTool('set_subtitle_style', {
+  title: 'Subtitle look',
+  description:
+    'One look for every cue. preset: "box" (light text on a translucent dark box — demos, tutorials), "clean" ' +
+    '(white text, soft outline, no box), "social" (big bold text, the spoken word highlighted — TikTok / Reels). ' +
+    'The other fields override the preset (null restores it). They sit just above the bottom edge — or above ' +
+    'the 9:16 safe zone — unless y is set. enabled=false hides them and keeps them out of the export. Undoable.',
+  inputSchema: {
+    preset: z.enum(['box', 'clean', 'social']).optional(),
+    enabled: z.boolean().optional(),
+    y: z.number().min(0).max(1).nullable().optional().describe('Block centre, 0–1 of the frame height; null = automatic'),
+    size: z.number().min(0.4).max(3).optional().describe('Multiplier, 1 = preset size'),
+    font_family: z.string().nullable().optional().describe('Google Fonts family'),
+    font_weight: z.number().int().min(100).max(900).nullable().optional(),
+    text_color: color.nullable().optional(),
+    highlight_color: color.nullable().optional().describe('Colour of the word being spoken'),
+    background: z.string().nullable().optional().describe('Box colour, "transparent" for none'),
+    uppercase: z.boolean().optional(),
+    highlight: z.boolean().nullable().optional().describe('Highlight the spoken word (default on for "social")'),
+    max_width: z.number().min(0.3).max(1).nullable().optional().describe('Wrap width, fraction of frame width'),
+  },
+}, (args) => run(async () => asText(await callEditor('set_subtitle_style', args))));
+
+// --- Open a video file ---
+
+const VIDEO_MIME = { '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska' };
+const OPEN_VIDEO_MAX_MB = 400;
+
+server.registerTool('open_video', {
+  title: 'Open a video file',
+  description:
+    'Loads any video file from this computer into the editor instead of the current clip (e.g. an already edited ' +
+    'video, to add subtitles, texts, cuts or a vertical version). The current edits are replaced. The editor ' +
+    `reloads; call get_project a few seconds later. MP4 (H.264) and WebM work best. Max ${OPEN_VIDEO_MAX_MB} MB.`,
+  inputSchema: { path: z.string().describe('Absolute path of the video file') },
+  annotations: { destructiveHint: true },
+}, (args) => run(async () => {
+  const file = path.resolve(args.path);
+  const mime = VIDEO_MIME[path.extname(file).toLowerCase()];
+  if (!mime) throw new Error(`Unsupported file type "${path.extname(file)}"; use ${Object.keys(VIDEO_MIME).join(', ')}`);
+  const { size } = await fs.stat(file);
+  if (size > OPEN_VIDEO_MAX_MB * 1e6) throw new Error(`The file is ${Math.round(size / 1e6)} MB; the limit is ${OPEN_VIDEO_MAX_MB} MB.`);
+  const data = (await fs.readFile(file)).toString('base64');
+  return asText(await callEditor('open_video', { data, mime, name: path.basename(file) }));
+}));
 
 // --- Prompts (slash commands in Claude Code) ---
 

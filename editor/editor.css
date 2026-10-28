@@ -621,14 +621,14 @@ body {
 #previewCanvas.placing { cursor: crosshair; }
 
 /* Timeline text track (under the click markers) */
-.timeline { height: 48px; }
+.timeline { height: 60px; }
 .timeline-bg { top: 14px; }
 .click-markers { bottom: auto; height: 28px; }
 
 .text-markers {
   position: absolute;
   left: 0; right: 0;
-  bottom: 2px;
+  bottom: 14px;
   height: 14px;
 }
 
@@ -887,9 +887,9 @@ details.advanced[open] summary { margin-bottom: 8px; }
 /* Four tabs fit on one line */
 .sidebar-tab {
   white-space: nowrap;
-  padding: 10px 4px;
+  padding: 10px 2px;
   font-size: 11px;
-  letter-spacing: 0.3px;
+  letter-spacing: 0;
 }
 .sidebar-tab .badge { padding: 1px 5px; font-size: 10px; }
 
@@ -901,4 +901,39 @@ details.advanced[open] summary { margin-bottom: 8px; }
 
 #exportCancelBtn {
   margin-top: 14px;
+}
+
+/* Subtitles track (bottom row of the timeline) */
+.subtitle-markers {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 1px;
+  height: 10px;
+}
+.subtitle-bar {
+  position: absolute;
+  top: 0; height: 100%;
+  background: rgba(255, 216, 77, 0.35);
+  border: 1px solid rgba(255, 216, 77, 0.75);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.subtitle-bar.active { background: rgba(255, 216, 77, 0.75); border-color: #fff; }
+
+/* Dropping a video file on the editor */
+body.dropping::after {
+  content: 'Drop the video to edit it';
+  position: fixed;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  background: rgba(10, 10, 14, 0.82);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 600;
+  z-index: 1000;
+  pointer-events: none;
 }

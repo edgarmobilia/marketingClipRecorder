@@ -61,7 +61,11 @@ async function handleBridgeCall(ws, msg) {
   try {
     const handler = BRIDGE_METHODS[msg.method];
     if (!handler) throw new Error(`Unknown method "${msg.method}"`);
-    if (!editorReady) throw new Error('The editor is still loading the recording; try again in a moment.');
+    if (!editorReady && msg.method !== 'open_video') {
+      throw new Error(editorEmpty
+        ? 'The editor has no video yet; open one with open_video (or ask the user to record or drop one).'
+        : 'The editor is still loading the recording; try again in a moment.');
+    }
     if (exportBtn.disabled && !['get_project', 'get_status'].includes(msg.method)) {
       throw new Error('An export is in progress; wait for it to finish.');
     }
@@ -209,6 +213,24 @@ function serializeSegment(sg) {
   };
 }
 
+function serializeSubtitles() {
+  const st = subtitleStyle;
+  return {
+    style: {
+      preset: st.preset, enabled: st.enabled !== false, y: st.y, size: st.size,
+      font_family: st.fontFamily, font_weight: st.fontWeight, text_color: st.textColor,
+      highlight_color: st.highlightColor, background: st.background, uppercase: st.uppercase,
+      highlight: subtitleLook().highlight, max_width: st.maxWidth,
+    },
+    cues: subtitles.map(c => ({
+      id: c.id, start_sec: round(c.start / 1000), end_sec: round(c.end / 1000), text: c.text,
+      ...(c.words && { word_timed: c.words.length === splitWords(c.text).length }),
+    })),
+  };
+}
+
+const secToMs = v => (v === undefined || v === null ? undefined : v * 1000);
+
 // API text params → overlay fields. Design values that fail validation are
 // reported instead of silently ignored.
 function textParams(p) {
@@ -336,6 +358,8 @@ const BRIDGE_METHODS = {
         safe_zone: safeZone(),
         current_time_sec: round(sourceVideo.currentTime),
         cursor_samples: moves.length,
+        // Opened with "Open video" (an already edited video): no clicks / cursor track
+        imported: !clicks.length && !moves.length,
         output_duration_sec: round(outputDurationMs() / 1000),
       },
       segments: segments.map(serializeSegment),
@@ -351,6 +375,7 @@ const BRIDGE_METHODS = {
           .map(([dk, dv]) => [DESIGN_API_NAMES[dk], dv])),
       }])),
       text_animations: TEXT_ANIMATIONS,
+      subtitles: serializeSubtitles(),
     };
   },
 
@@ -581,12 +606,59 @@ const BRIDGE_METHODS = {
     return serializeCursor();
   },
 
+  async set_subtitles({ cues = [], from_sec, to_sec }) {
+    const list = setSubtitles(cues.map(c => ({
+      start: c.start_sec * 1000, end: c.end_sec * 1000, text: c.text,
+      words: c.words && c.words.map(w => ({ text: w.text, start: w.start_sec * 1000, end: w.end_sec * 1000 })),
+    })), { from: secToMs(from_sec) ?? null, to: secToMs(to_sec) ?? null });
+    switchTab('subtitles');
+    return { count: list.length, ...serializeSubtitles() };
+  },
+
+  async update_subtitles({ updates = [], remove = [] }) {
+    for (const u of updates) if (!subtitles.some(c => c.id === u.id)) throw new Error(`No subtitle with id "${u.id}"`);
+    for (const id of remove) if (!subtitles.some(c => c.id === id)) throw new Error(`No subtitle with id "${id}"`);
+    pushHistory();
+    for (const u of updates) updateSubtitle(u.id, { text: u.text, start: secToMs(u.start_sec), end: secToMs(u.end_sec) });
+    for (const id of remove) removeSubtitle(id);
+    sortSubtitles();
+    projectChanged();
+    return serializeSubtitles();
+  },
+
+  async set_subtitle_style(p) {
+    setSubtitleStyle({
+      preset: p.preset, enabled: p.enabled, y: p.y, size: p.size, fontFamily: p.font_family,
+      fontWeight: p.font_weight, textColor: p.text_color, highlightColor: p.highlight_color,
+      background: p.background, uppercase: p.uppercase, highlight: p.highlight, maxWidth: p.max_width,
+    });
+    switchTab('subtitles');
+    return serializeSubtitles().style;
+  },
+
+  async get_audio_pcm({ start_sec = 0, end_sec }) {
+    setClaudeStatus('busy', 'Claude: reading the audio…');
+    const a = await audioPcmBase64(start_sec, end_sec ?? Infinity);
+    return { sample_rate: a.sampleRate, start_sec: round(a.startSec), end_sec: round(a.endSec), peak: round(a.peak), pcm16_base64: a.data };
+  },
+
+  async open_video({ data, mime, name = '' }) {
+    const bin = atob(data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    await openVideoFile(new Blob([bytes], { type: mime }), name, 400);
+    return { opened: name, size_mb: round(bytes.length / 1e6, 1), note: 'The editor reloads with the new video; call get_project in a few seconds.' };
+  },
+
   async undo() {
     return { undone: undo() };
   },
 
-  async export_video({ formats } = {}) {
+  async export_video({ formats, subtitles_srt = false } = {}) {
     if (exportJob) throw new Error('An export is already running');
+    if (subtitles_srt && !downloadSrt(cameraOptions.aspect && cameraOptions.aspect !== 'source' ? cameraOptions.aspect.replace(':', 'x') : '')) {
+      throw new Error('There are no subtitles to save as .srt');
+    }
     if (!formats || !formats.length) {
       exportVideo({ label: cameraOptions.aspect && cameraOptions.aspect !== 'source' ? cameraOptions.aspect.replace(':', 'x') : '' });
       return { started: true, format: cameraOptions.aspect || 'source', duration_sec: round(outputDurationMs() / 1000) };

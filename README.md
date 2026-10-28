@@ -98,6 +98,16 @@ The **Cuts** tab removes or fast-forwards boring stretches (waiting, loading): *
 clicks, typing or cursor movement. Drag a band or its edges on the timeline to adjust it; the final length is shown
 next to the time. Zooms and texts stay in sync.
 
+The **Subs** tab holds the subtitle track: timed cues with one look — *Box* (light text on a translucent dark box),
+*Clean* (white text with an outline) or *Social* (big bold text with the spoken word highlighted, TikTok style). They
+follow cuts and speed-ups, sit above the TikTok / Reels UI in vertical videos, are burned into the export and can be
+downloaded as an `.srt` (timed to the final video). Import an `.srt` / `.vtt`, edit cues by hand, or ask Claude to
+transcribe the video.
+
+**Open video…** (or drop a file on the editor) loads any video — an already edited clip, a phone video — instead of
+a recording, to add subtitles, texts, cuts or a vertical version. It has no clicks or cursor track, so the camera
+stays wide unless you add shots.
+
 Every visual property of a text is data, not code: background / gradient, text colour, border, corner radius,
 padding, any Google Fonts family, weight, size, italic, uppercase, letter spacing, alignment, shadow, opacity,
 rotation and letter outline.
@@ -139,10 +149,17 @@ first one does; later ones detect it and relay their calls through it, so every 
 if the owner exits, another takes over). If the port is held by something else, tools say so explicitly;
 `get_status` shows the role (`owner` / `proxy` / `blocked`) and whether the editor is connected.
 
+**Subtitles:** Claude cannot hear audio, so `transcribe` runs Whisper locally in the MCP server (transformers.js, on
+the CPU; nothing is uploaded). The first run downloads the model (≈ 250 MB for the default *small*, ≈ 80 MB for
+*base*); a minute of speech takes roughly 20–60 s. Claude then proofreads the cues (names, numbers, punctuation) and
+picks the look. MCP clients whose model can listen get the soundtrack itself with `get_audio`. Without speech,
+Claude can write narration cues itself with `set_subtitles`.
+
 Tools: `get_status`, `get_project`, `get_frame`, `get_contact_sheet`, `seek`, `update_events`, `set_camera`, `add_text`,
 `update_text`, `update_texts` (restyle many at once), `remove_text`, `find_idle`, `add_segment`, `update_segment`,
 `remove_segment` (cut / speed up stretches), `add_shot`, `update_shot`, `remove_shot`, `analyze_video`,
-`apply_edits`, `set_cursor` (any cursor — Claude can even draw one as SVG — and click
+`apply_edits`, `transcribe`, `get_audio`, `set_subtitles`, `update_subtitles`, `set_subtitle_style`, `open_video`,
+`set_cursor` (any cursor — Claude can even draw one as SVG — and click
 effect), `undo`, `export_video`. Claude can change any
 look — colours, fonts, borders, gradients… — live, without touching the editor's code.
 
@@ -173,12 +190,14 @@ The bridge only listens on `127.0.0.1` and only accepts connections from `chrome
 │   ├── cursor.js          # Cursor + click effects drawn in post (arrow, glove, dot, custom)
 │   ├── shots.js           # Director camera shots (wide / close-up overrides)
 │   ├── analysis.js        # Pixel analysis: scene changes, frozen stretches, activity
+│   ├── subtitles.js       # Subtitle track: cues, look, rendering, SRT, audio for transcription
 │   ├── export.js          # Frame-exact offline export (WebCodecs) + real-time fallback
 │   ├── lib/               # Vendored mediabunny (MPL-2.0): demux / encode / MP4 mux
 │   ├── bridge.js          # WebSocket client for the Claude MCP server
 │   └── editor.css
 ├── mcp/
 │   ├── server.js          # MCP server (stdio) + WebSocket bridge to the editor
+│   ├── transcribe.js      # Local Whisper transcription → subtitle cues
 │   └── test-bridge.mjs    # Smoke test
 └── icons/
 ```
