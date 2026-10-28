@@ -23,6 +23,8 @@ async function loadPipeline(model) {
       } catch {
         throw new Error('Transcription needs @huggingface/transformers: run `npm install` in the mcp/ folder, then restart Claude Code.');
       }
+      // The packaged app may live in a read-only folder: keep models per user
+      if (process.env.MCR_MODEL_CACHE) tf.env.cacheDir = process.env.MCR_MODEL_CACHE;
       return tf.pipeline('automatic-speech-recognition', MODELS[model], { dtype: 'q8' });
     })();
     pipes.set(model, p);
@@ -45,9 +47,12 @@ export async function transcribePcm(pcm, { model = 'small', language = null } = 
   // Long audio is decoded in overlapping 30 s windows; where they meet, words
   // can come out twice, or as zero-length ghosts. Time only moves forward,
   // so drop any that go back or take no time at all
+  // The last word's end can come out past the audio, or absurdly long
+  const durSec = pcm.length / 16000;
   const words = [];
   for (const c of out.chunks || []) {
-    const w = { text: c.text.trim(), start: c.timestamp[0], end: c.timestamp[1] ?? c.timestamp[0] + 0.3 };
+    const start = c.timestamp[0];
+    const w = { text: c.text.trim(), start, end: Math.min(c.timestamp[1] ?? start + 0.3, start + 2.5, durSec) };
     const prev = words[words.length - 1];
     if (!w.text || w.end - w.start < 0.02 || (prev && w.start < prev.end - 0.05)) continue;
     words.push(w);

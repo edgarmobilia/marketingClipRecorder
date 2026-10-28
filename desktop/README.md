@@ -12,6 +12,12 @@ npm install
 npm start
 ```
 
+To hand the app to someone else, `npm run package` builds
+`dist/Marketing Clip Recorder-win32-x64/` and a `.zip` of it: the app, the editor
+and the Claude MCP server (run by the app's own executable as Node, so the other
+machine needs no Node.js). On that machine, run `Conectar con Claude.cmd` once
+to register the server in Claude Code; see `LEEME.txt` inside the folder.
+
 - Pick a monitor, press **Grabar** (or `Alt + S`). The countdown and stop
   button live in a small floating pill that is excluded from the capture
   (`setContentProtection`, Windows 10 2004+).
