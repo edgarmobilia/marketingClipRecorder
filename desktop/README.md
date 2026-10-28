@@ -4,7 +4,8 @@ Records a whole monitor instead of a browser tab, so everything that Chrome's
 tab capture misses ends up in the video: native `<select>` popups,
 `alert`/`confirm` dialogs, file pickers, popups, new windows and other apps.
 When the recording stops, the same clip editor as the extension opens
-(`../editor`, unchanged).
+(`../editor`, unchanged). **Abrir vídeo…** (or dropping a file on the window)
+opens the editor on any existing video instead — e.g. to add subtitles.
 
 ```
 npm install

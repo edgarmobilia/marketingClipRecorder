@@ -48,6 +48,7 @@ async function init() {
   $('stopBtn').addEventListener('click', toggle);
   $('closeBtn').addEventListener('click', () => (session ? stopRecording() : window.close()));
   mcrDesktop.onToggle(toggle);
+  setupOpenVideo();
 
   await refreshSources();
   await checkNoCursor();
@@ -311,6 +312,53 @@ function cleanup() {
   session.timers.forEach(t => { clearTimeout(t); clearInterval(t); });
   session.stream?.getTracks().forEach(t => t.stop());
   session = null;
+}
+
+// --- Open a video file instead of recording ---
+// Same hand-off as a finished recording: the file goes to IndexedDB as 'last'
+// and main opens the editor on it (with no click / cursor events)
+
+const VIDEO_EXT = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'video/x-matroska': 'mkv' };
+const isVideoFile = f => f.type.startsWith('video/') || /\.(mp4|m4v|webm|mov|mkv)$/i.test(f.name);
+
+async function openVideo(file) {
+  if (!file || session) return;
+  if (!isVideoFile(file)) { showError(`"${file.name}" no es un vídeo`); return; }
+  const type = file.type || (/\.webm$/i.test(file.name) ? 'video/webm' : /\.mov$/i.test(file.name) ? 'video/quicktime' : 'video/mp4');
+  showError('');
+  $('openVideoBtn').disabled = true;
+  try {
+    await idbPut('last', new Blob([file], { type }));
+    await mcrDesktop.openVideo(type, VIDEO_EXT[type] || 'mp4');
+  } catch (err) {
+    showError(`No se pudo abrir el vídeo: ${err.message}`);
+  } finally {
+    $('openVideoBtn').disabled = false;
+  }
+}
+
+function setupOpenVideo() {
+  const input = $('openVideoInput');
+  $('openVideoBtn').addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    const f = input.files[0];
+    input.value = '';
+    openVideo(f);
+  });
+  document.addEventListener('dragover', (e) => {
+    if (session || ![...e.dataTransfer.items].some(i => i.kind === 'file')) return;
+    e.preventDefault();
+    document.body.classList.add('dropping');
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget) document.body.classList.remove('dropping');
+  });
+  document.addEventListener('drop', (e) => {
+    document.body.classList.remove('dropping');
+    const f = [...e.dataTransfer.files].find(isVideoFile);
+    e.preventDefault();
+    if (f) openVideo(f);
+  });
 }
 
 // --- IndexedDB (shared with the editor through the app:// origin) ---

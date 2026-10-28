@@ -281,6 +281,19 @@ ipcMain.handle('recording-ready', async (e, { mimeType, ext }) => {
   openEditor();
 });
 
+// A video file opened from the control window (already in IndexedDB as
+// 'last'): a fresh project with no events, never auto-exported
+ipcMain.handle('open-video', (e, { mimeType, ext }) => {
+  if (recording) throw new Error('Para la grabación antes de abrir un vídeo');
+  sessionStore.set('mcrEditorClicks', []);
+  sessionStore.set('mcrEditorMoves', []);
+  sessionStore.set('mcrEditorMimeType', mimeType);
+  sessionStore.set('mcrEditorExt', ext);
+  sessionStore.set('mcrEditorAutoExport', false);
+  sessionStore.set('mcrEditorFresh', true);
+  openEditor();
+});
+
 // --- Cursor-free capture (ffmpeg) ---
 
 ipcMain.handle('nocursor-available', () => capture.probe());

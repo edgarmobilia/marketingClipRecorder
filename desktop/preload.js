@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('mcrDesktop', {
   stopRequested: () => ipcRenderer.invoke('recording-stop-requested'),
   ready: (mimeType, ext) => ipcRenderer.invoke('recording-ready', { mimeType, ext }),
   failed: () => ipcRenderer.invoke('recording-failed'),
+  openVideo: (mimeType, ext) => ipcRenderer.invoke('open-video', { mimeType, ext }),
   nocursorAvailable: () => ipcRenderer.invoke('nocursor-available'),
   captureStart: (displayId, bitrate) => ipcRenderer.invoke('capture-start', { displayId, bitrate }),
   captureStop: (audio, audioExt, audioStartAt) => ipcRenderer.invoke('capture-stop', { audio, audioExt, audioStartAt }),

@@ -106,3 +106,22 @@ kbd {
 .rec-dot.live { background: var(--rec); animation: blink 1.2s infinite; }
 
 @keyframes blink { 50% { opacity: .3; } }
+
+.btn-open { margin-left: auto; }
+
+/* Dropping a video file on the window */
+body.dropping::after {
+  content: 'Suelta el vídeo para editarlo';
+  position: fixed;
+  inset: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--rec);
+  border-radius: 12px;
+  background: rgba(21, 22, 26, 0.9);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  pointer-events: none;
+}
