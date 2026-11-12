@@ -229,6 +229,60 @@ function serializeSubtitles() {
   };
 }
 
+function serializeImage(im) {
+  const a = imageAssets.get(im.asset);
+  const full = im.mode === 'fullscreen';
+  return {
+    id: im.id,
+    asset_id: im.asset,
+    name: a ? a.name : null,
+    start_sec: round(im.start / 1000),
+    end_sec: round(im.end / 1000),
+    mode: im.mode,
+    ...(full ? { fit: im.fit, ...(im.fit === 'contain' && { background: im.background }), ken_burns: im.kenBurns }
+      : { x: round(im.x), y: round(im.y), w: round(im.w), anchor: im.anchor,
+        // Height that follows from the picture's aspect, as a fraction of the frame (or page) height
+        h: a ? round(im.w * (a.height / a.width) * (im.anchor === 'video'
+          ? (sourceVideo.videoWidth || 1) / (sourceVideo.videoHeight || 1)
+          : previewCanvas.width / previewCanvas.height)) : null,
+        radius: im.radius, shadow: im.shadow, border_width: im.borderWidth,
+        ...(im.borderWidth > 0 && { border_color: im.borderColor }) }),
+    animation: im.animation,
+    opacity: im.opacity,
+    rotation: im.rotation,
+  };
+}
+
+function serializeImageAssets() {
+  const used = new Set(images.map(im => im.asset));
+  return [...imageAssets.entries()].map(([id, a]) => ({ asset_id: id, name: a.name, width: a.width, height: a.height, used: used.has(id) }));
+}
+
+// API image params → image fields
+function imageParams(p) {
+  if (p.border_color !== undefined && !isColor(p.border_color)) throw new Error(`Invalid border_color: ${JSON.stringify(p.border_color)}`);
+  if (p.background !== undefined && !isColor(p.background)) throw new Error(`Invalid background: ${JSON.stringify(p.background)}`);
+  if (p.animation !== undefined && !IMAGE_ANIMATIONS.includes(p.animation)) throw new Error(`animation must be one of ${IMAGE_ANIMATIONS.join(', ')}`);
+  return stripUndefined({
+    asset: p.asset_id,
+    start: secToMs(p.start_sec), end: secToMs(p.end_sec),
+    mode: p.mode, fit: p.fit, background: p.background,
+    x: p.x, y: p.y, w: p.w, anchor: p.anchor,
+    animation: p.animation, kenBurns: p.ken_burns,
+    radius: p.radius, shadow: p.shadow, borderWidth: p.border_width, borderColor: p.border_color,
+    opacity: p.opacity, rotation: p.rotation,
+  });
+}
+
+// { data (base64), mime, name } → asset id (a new picture sent by the MCP server)
+async function assetFromParams(p) {
+  if (!p.data) return p.asset_id;
+  const bin = atob(p.data);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return addImageAsset(new Blob([bytes], { type: p.mime || 'image/png' }), p.name || '');
+}
+
 const secToMs = v => (v === undefined || v === null ? undefined : v * 1000);
 
 // API text params → overlay fields. Design values that fail validation are
@@ -320,7 +374,7 @@ async function seekExact(timeSec) {
 
 // safeZones: overlay the TikTok / Reels UI area so a layout can be checked
 async function renderAt(timeSec, rendered, safeZones = false) {
-  await fontsReady();
+  await Promise.all([fontsReady(), imagesReady()]);
   await seekExact(timeSec);
   renderFrame(sourceVideo.currentTime, { raw: !rendered, guides: rendered && safeZones ? 'always' : false });
   updateTimeDisplay(sourceVideo.currentTime);
@@ -346,6 +400,7 @@ function scaledCopy(maxWidth) {
 
 const BRIDGE_METHODS = {
   async get_project() {
+    await imagesReady(); // names and sizes of the pictures come from the decoded assets
     return {
       recording: {
         duration_sec: round(sourceVideo.duration),
@@ -375,6 +430,8 @@ const BRIDGE_METHODS = {
           .map(([dk, dv]) => [DESIGN_API_NAMES[dk], dv])),
       }])),
       text_animations: TEXT_ANIMATIONS,
+      images: [...images].sort((a, b) => a.start - b.start).map(serializeImage),
+      image_assets: serializeImageAssets(),
       subtitles: serializeSubtitles(),
     };
   },
@@ -551,6 +608,62 @@ const BRIDGE_METHODS = {
 
   async remove_text({ id }) {
     removeText(id);
+    return { removed: id };
+  },
+
+  async add_image(params) {
+    const asset_id = await assetFromParams(params);
+    if (!asset_id) throw new Error('Pass a picture: path or url (MCP tool), or asset_id of one already in the project');
+    const p = imageParams({ ...params, asset_id });
+    // Default size: a modest overlay, narrower for tall pictures
+    if (p.w === undefined && p.mode !== 'fullscreen') {
+      const a = imageAssets.get(asset_id);
+      const ratio = previewCanvas.height / previewCanvas.width * (a.width / a.height);
+      p.w = Math.max(0.12, Math.min(0.35, 0.5 * ratio));
+    }
+    const im = await addImage(p);
+    switchTab('images');
+    await renderAt(Math.min(im.end, im.start + 600) / 1000, true);
+    return serializeImage(im);
+  },
+
+  async update_image(params) {
+    const asset_id = await assetFromParams(params);
+    const patch = imageParams({ ...params, asset_id });
+    const cur = images.find(i => i.id === params.id);
+    if (cur && (params.dx || params.dy)) {
+      // Nudges are in frame fractions; a page-anchored image converts through the current zoom
+      const v = lastView || { W: 1, H: 1, vw: 1, vh: 1, s: 1 };
+      const kx = cur.anchor === 'video' ? v.W / (v.vw * v.s) : 1;
+      const ky = cur.anchor === 'video' ? v.H / (v.vh * v.s) : 1;
+      patch.x = (patch.x ?? cur.x) + (params.dx || 0) * kx;
+      patch.y = (patch.y ?? cur.y) + (params.dy || 0) * ky;
+    }
+    const im = await updateImage(params.id, patch);
+    return serializeImage(im);
+  },
+
+  async get_transcript({ from_sec = 0, to_sec = Infinity }) {
+    const inRange = (s, e) => e >= from_sec * 1000 && s <= to_sec * 1000;
+    const cues = subtitles.filter(c => inRange(c.start, c.end));
+    if (!cues.length) {
+      return { words: [], cues: [], note: subtitles.length ? 'No words in that range.' : 'No subtitles yet: run transcribe first.' };
+    }
+    const words = [];
+    for (const c of cues) {
+      for (const w of cueWords(c)) {
+        if (inRange(w.start, w.end)) words.push({ t: round(w.start / 1000, 2), end: round(w.end / 1000, 2), w: w.text });
+      }
+    }
+    return {
+      word_timed: cues.every(c => c.words && c.words.length === splitWords(c.text).length),
+      cues: cues.map(c => ({ id: c.id, start_sec: round(c.start / 1000), end_sec: round(c.end / 1000), text: c.text })),
+      words,
+    };
+  },
+
+  async remove_image({ id }) {
+    removeImage(id);
     return { removed: id };
   },
 

@@ -53,6 +53,7 @@
       <div class="sidebar-tabs">
         <button class="sidebar-tab active" data-tab="events">Zooms <span class="badge" id="clickCount">0</span></button>
         <button class="sidebar-tab" data-tab="texts">Texts <span class="badge" id="textCount">0</span></button>
+        <button class="sidebar-tab" data-tab="images">Images <span class="badge" id="imageCount">0</span></button>
         <button class="sidebar-tab" data-tab="subtitles" title="Subtitles">Subs <span class="badge" id="subtitleCount">0</span></button>
         <button class="sidebar-tab" data-tab="cuts">Cuts <span class="badge" id="segmentCount">0</span></button>
         <button class="sidebar-tab" data-tab="cursor">Cursor</button>
@@ -118,6 +119,16 @@
           <div class="chips" id="addTextChips"></div>
         </div>
         <div id="textList" class="click-list"></div>
+      </div>
+
+      <!-- Images: logos, screenshots, photos, full-screen cutaways -->
+      <div class="tab-panel hidden" id="panel-images">
+        <div class="panel-section">
+          <div class="field-label">Add an image at the playhead</div>
+          <button id="addImageBtn" class="btn btn-sm btn-primary">+ Choose image…</button>
+          <input type="file" id="imageFileInput" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,image/avif" hidden>
+        </div>
+        <div id="imageList" class="click-list"></div>
       </div>
 
       <!-- Subtitles: one timed track, burned into the export -->
@@ -197,6 +208,7 @@
   <script src="overlays.js"></script>
   <script src="editor.js"></script>
   <script src="texts.js"></script>
+  <script src="images.js"></script>
   <script src="segments.js"></script>
   <script src="cursor.js"></script>
   <script src="shots.js"></script>

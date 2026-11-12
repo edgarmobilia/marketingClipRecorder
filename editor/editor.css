@@ -937,3 +937,25 @@ body.dropping::after {
   z-index: 1000;
   pointer-events: none;
 }
+
+/* Images (share the text track on the timeline) */
+.text-bar.image-bar {
+  background: rgba(16, 185, 129, 0.32);
+  border-color: rgba(52, 211, 153, 0.75);
+  color: #d9fbe9;
+}
+.text-bar.image-bar.active {
+  background: rgba(16, 185, 129, 0.62);
+  border-color: #fff;
+}
+.image-thumb {
+  width: 34px; height: 26px;
+  border-radius: 6px;
+  background: var(--bg3);
+  border: 1px solid rgba(255,255,255,0.15);
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.image-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }

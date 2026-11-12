@@ -76,6 +76,7 @@ async function exportVideo({ label = '' } = {}) {
   setExportUi(true, 'Preparing...');
 
   try {
+    await Promise.all([fontsReady(), imagesReady()]);
     let result;
     try {
       result = await exportOffline(job);

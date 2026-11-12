@@ -104,6 +104,12 @@ follow cuts and speed-ups, sit above the TikTok / Reels UI in vertical videos, a
 downloaded as an `.srt` (timed to the final video). Import an `.srt` / `.vtt`, edit cues by hand, or ask Claude to
 transcribe the video.
 
+The **Images** tab puts pictures on the video — a logo, a screenshot, a product photo, a QR code — as an
+*Overlay* (drag it on the preview, size, rounded corners, shadow, optionally glued to the page so it follows the
+zoom) or *Full screen* (a cutaway / intro or outro card: fill the frame or show the whole picture on a colour, with an
+optional slow push-in). Drop an image file on the editor to add it at the playhead. Texts and subtitles render above
+images, so a title can sit on a full-screen picture. Pictures are stored once in IndexedDB, not in the undo history.
+
 **Open video…** (or drop a file on the editor) loads any video — an already edited clip, a phone video — instead of
 a recording, to add subtitles, texts, cuts or a vertical version. It has no clicks or cursor track, so the camera
 stays wide unless you add shots.
@@ -157,7 +163,9 @@ Claude can write narration cues itself with `set_subtitles`.
 
 Tools: `get_status`, `get_project`, `get_frame`, `get_contact_sheet`, `seek`, `update_events`, `set_camera`, `add_text`,
 `update_text`, `update_texts` (restyle many at once), `remove_text`, `find_idle`, `add_segment`, `update_segment`,
-`remove_segment` (cut / speed up stretches), `add_shot`, `update_shot`, `remove_shot`, `analyze_video`,
+`remove_segment` (cut / speed up stretches), `add_image`, `update_image`, `remove_image` (from a file path, a URL,
+SVG graphics Claude draws itself — e.g. one card per item of a spoken list — or a picture already in the project;
+`preview` returns the rendered frame and `dx`/`dy` nudge it), `get_transcript` (spoken words with times), `add_shot`, `update_shot`, `remove_shot`, `analyze_video`,
 `apply_edits`, `transcribe`, `get_audio`, `set_subtitles`, `update_subtitles`, `set_subtitle_style`, `open_video`,
 `set_cursor` (any cursor — Claude can even draw one as SVG — and click
 effect), `undo`, `export_video`. Claude can change any
@@ -186,6 +194,7 @@ The bridge only listens on `127.0.0.1` and only accepts connections from `chrome
 │   ├── editor.js          # Canvas renderer + automatic camera
 │   ├── overlays.js        # Floating text styles + rendering
 │   ├── texts.js           # Texts panel, timeline track, drag to place
+│   ├── images.js          # Image overlays / full-screen cutaways: assets, rendering, panel
 │   ├── segments.js        # Cuts & speed-ups: model, playback, idle detection, timeline bands
 │   ├── cursor.js          # Cursor + click effects drawn in post (arrow, glove, dot, custom)
 │   ├── shots.js           # Director camera shots (wide / close-up overrides)

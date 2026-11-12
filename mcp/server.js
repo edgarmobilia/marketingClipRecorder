@@ -381,6 +381,20 @@ SUBTITLES (a separate track from the texts: one look, timed cues, burned into th
   9:16 — automatically. Keep them clear of captions / lower-thirds at the bottom: move those texts up, or
   set subtitle y. Verify with get_frame (rendered=true) on 2–3 cues.
 
+IMAGES (add_image: a file path, a URL, or a picture already in the project)
+- Use them when they carry information the recording does not: the product logo on the opening/closing card,
+  a customer logo, a phone number / QR for the CTA, a photo of the result, a screenshot of something off-screen.
+- Fullscreen cutaway (mode "fullscreen") for an intro/outro card or a 1.5-3 s photo beat; put the title text on
+  top of it (texts render above images). fit "cover" for photos, "contain" + a calm background for logos/UI.
+- Overlays: one at a time, modest size (logo w 0.08-0.15, screenshot/photo 0.3-0.45), clear of the action and of
+  texts, inside the safe zone in 9:16. radius 12-24 + shadow "soft" lifts screenshots/photos; logos need neither.
+- "fade" (default) or "slide-up"; "zoom"/"pop" sparingly. Check every image with get_frame (rendered=true).
+- Spoken lists / key points: get_transcript for word times, then one SVG graphic per item (same template:
+  size, colours, radius, font; a number or icon + 2-5 words), each appearing ~0.2 s before its item is said.
+  Either one card at a time in the same spot, or a list that builds up (item n below item n-1, all ending
+  together). Add them with apply_edits, check with add_image/update_image preview=true or a contact sheet, and
+  nudge (dx/dy) anything that covers the action, a face, a text or the safe zone.
+
 OPENED VIDEOS (get_project recording.imported = true)
 - The user may open any finished/edited video instead of a recording (Open video… or drag & drop; you can do it
   with open_video and a file path). There are no clicks or cursor track, so the camera stays wide: frame
@@ -463,7 +477,7 @@ server.registerTool('get_project', {
   description:
     'Returns the clip being edited: duration and resolution, every recorded event (clicks and typing) with its ' +
     'time, position, the label/role of the element that was clicked, page title, element_rect, and its zoom settings; ' +
-    'the camera options; and all text overlays. Call this first.',
+    'the camera options; all text overlays, images (and image_assets) and subtitles. Call this first.',
   inputSchema: {},
   annotations: { readOnlyHint: true },
 }, () => run(async () => asText(await callEditor('get_project'))));
@@ -640,13 +654,21 @@ server.registerTool('apply_edits', {
   description:
     'Runs several editor operations in order as ONE undo step. ops: [{ method, params }] where method is any ' +
     'editing tool name (update_events, set_camera, add_text, update_text, update_texts, remove_text, add_segment, ' +
-    'update_segment, remove_segment, add_shot, update_shot, remove_shot, set_cursor, set_subtitles, ' +
+    'update_segment, remove_segment, add_shot, update_shot, remove_shot, add_image, update_image, remove_image, ' +
+    'set_cursor, set_subtitles, ' +
     'update_subtitles, set_subtitle_style) and params its arguments. ' +
     'Returns each result or error; failed ops do not stop the rest.',
   inputSchema: {
     ops: z.array(z.object({ method: z.string(), params: z.record(z.string(), z.any()).optional() })).min(1).max(200),
   },
-}, (args) => run(async () => asText(await callEditor('apply_edits', args))));
+}, (args) => run(async () => {
+  // Pictures named by path / url are read here, before the ops reach the editor
+  const ops = await Promise.all(args.ops.map(async (op) => (
+    ['add_image', 'update_image'].includes(op.method) && op.params
+      ? { ...op, params: await resolveImageSource(op.params) }
+      : op)));
+  return asText(await callEditor('apply_edits', { ops }));
+}));
 
 server.registerTool('add_text', {
   title: 'Add text overlay',
@@ -682,6 +704,146 @@ server.registerTool('remove_text', {
   inputSchema: { id: z.string() },
   annotations: { destructiveHint: true },
 }, (args) => run(async () => asText(await callEditor('remove_text', args))));
+
+// --- Images ---
+
+const IMAGE_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif',
+};
+const IMAGE_MAX_MB = 25;
+
+// Inline SVG markup -> a self-contained SVG file. An <img> needs the xmlns, and an
+// explicit width/height (from the viewBox) or it reports no size / the wrong aspect
+function normalizeSvg(svg) {
+  let s = String(svg).trim().replace(/^<\?xml[^>]*>\s*/, '');
+  const open = /^<svg\b[^>]*>/i.exec(s);
+  if (!open) throw new Error('svg must be SVG markup starting with <svg');
+  let tag = open[0];
+  if (!/\sxmlns=/.test(tag)) tag = tag.replace(/^<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+  const hasW = /\swidth=/.test(tag), hasH = /\sheight=/.test(tag);
+  const vb = /\sviewBox=["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["']/.exec(tag);
+  if (!vb && (!hasW || !hasH)) throw new Error('svg needs a viewBox (or width and height) so its size is known');
+  if (vb && !hasW) tag = tag.replace(/^<svg/i, `<svg width="${vb[1]}"`);
+  if (vb && !hasH) tag = tag.replace(/^<svg/i, `<svg height="${vb[2]}"`);
+  s = tag + s.slice(open[0].length);
+  if (s.length > 2e6) throw new Error('svg is too large (2 MB max)');
+  return s;
+}
+
+// { path | url | svg, ...rest } -> { data (base64), mime, name, ...rest }
+async function resolveImageSource(params) {
+  const { path: file, url, svg, ...rest } = params;
+  if ([file, url, svg].filter(Boolean).length > 1) throw new Error('Pass only one of path, url or svg');
+  if (svg) {
+    return { ...rest, data: Buffer.from(normalizeSvg(svg), 'utf8').toString('base64'), mime: 'image/svg+xml', name: rest.name || 'graphic.svg' };
+  }
+  if (file) {
+    const abs = path.resolve(file);
+    const mime = IMAGE_MIME[path.extname(abs).toLowerCase()];
+    if (!mime) throw new Error(`Unsupported image type "${path.extname(abs)}"; use ${Object.keys(IMAGE_MIME).join(', ')}`);
+    const { size } = await fs.stat(abs);
+    if (size > IMAGE_MAX_MB * 1e6) throw new Error(`The image is ${Math.round(size / 1e6)} MB; the limit is ${IMAGE_MAX_MB} MB.`);
+    return { ...rest, data: (await fs.readFile(abs)).toString('base64'), mime, name: rest.name || path.basename(abs) };
+  }
+  if (url) {
+    const dataUrl = /^data:(image\/[\w.+-]+);base64,(.+)$/s.exec(url);
+    if (dataUrl) return { ...rest, data: dataUrl[2], mime: dataUrl[1], name: rest.name || 'pasted image' };
+    if (!/^https?:\/\//i.test(url)) throw new Error('url must be http(s):// or a data:image/...;base64 URL');
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Downloading the image failed: HTTP ${res.status}`);
+    const pathname = new URL(url).pathname;
+    const mime = (res.headers.get('content-type') || '').split(';')[0].trim()
+      || IMAGE_MIME[path.extname(pathname).toLowerCase()] || '';
+    if (!mime.startsWith('image/')) throw new Error(`The url is not an image (content-type "${mime || 'unknown'}")`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > IMAGE_MAX_MB * 1e6) throw new Error(`The image is ${Math.round(buf.length / 1e6)} MB; the limit is ${IMAGE_MAX_MB} MB.`);
+    const name = rest.name || decodeURIComponent(path.basename(pathname)) || 'image';
+    return { ...rest, data: buf.toString('base64'), mime, name };
+  }
+  return rest;
+}
+
+const IMAGE_HELP =
+  'Images are pictures placed on the video: a logo, a screenshot, a product photo, a QR code, a sticker ' +
+  '(mode "overlay"), or a full-frame cutaway / title card / photo that replaces the recording for a moment ' +
+  '(mode "fullscreen"; fit "cover" fills and crops, "contain" shows the whole picture on `background`; ' +
+  'ken_burns adds a slow push-in). Overlay: x/y = centre, w = width, all 0-1 fractions of the output frame ' +
+  '(anchor "screen") or of the recorded page (anchor "video" - glued to the page, follows zoom/pan). Height ' +
+  "follows the picture's aspect ratio. Times are SOURCE seconds like texts. Images sit under texts and " +
+  'subtitles, so a title can go on top of a fullscreen picture. Position/size are stored per output format ' +
+  '(aspect), like texts. radius / border_width are px at 1080p. The picture comes from path (a file on this ' +
+  'computer), url (http(s) or data:image), svg (markup you write yourself - see below) or asset_id (a picture ' +
+  'already in the project - reuse it instead of sending it again; get_project lists image_assets). ' +
+  'SVG GRAPHICS: draw your own cards, icons, badges, list items, numbers, charts as SVG and pass it in svg. Give ' +
+  'the root a viewBox (its aspect is the image aspect); draw at roughly the size it will show (e.g. 800x240 for a ' +
+  'card that is w 0.4 of a 1920 frame). Text inside an SVG image can only use fonts installed on the computer: ' +
+  'font-family "Segoe UI, Arial, sans-serif"; no external <image href> or @import (they do not load). Use text ' +
+  'overlays instead when plain text is enough. preview=true returns the rendered frame so you can check it, then ' +
+  'nudge with update_image dx/dy (fractions of the frame) until it sits right.';
+
+const imageFields = {
+  start_sec: z.number().min(0).describe('When the image appears (source seconds)'),
+  end_sec: z.number().min(0).describe('When it disappears (source seconds)'),
+  mode: z.enum(['overlay', 'fullscreen']).describe('overlay (default) or fullscreen cutaway'),
+  fit: z.enum(['cover', 'contain']).describe('fullscreen only (default cover)'),
+  background: z.string().describe('fullscreen + contain: colour behind the picture (default near-black)'),
+  ken_burns: z.boolean().describe('fullscreen: slow push-in while shown'),
+  x: z.number().min(-0.5).max(1.5).describe('overlay: centre x, 0-1'),
+  y: z.number().min(-0.5).max(1.5).describe('overlay: centre y, 0-1'),
+  w: z.number().min(0.02).max(2).describe('overlay: width, fraction of the frame (or page) width'),
+  anchor: z.enum(['screen', 'video']),
+  animation: z.enum(['fade', 'slide-up', 'pop', 'zoom', 'none']).describe('Entrance/exit (default fade)'),
+  radius: z.number().min(0).max(400).describe('overlay: corner radius px at 1080p'),
+  shadow: z.enum(['none', 'soft', 'strong']).describe('overlay: drop shadow'),
+  border_width: z.number().min(0).max(60).describe('px at 1080p'),
+  border_color: z.string(),
+  opacity: z.number().min(0).max(1),
+  rotation: z.number().min(-180).max(180).describe('Degrees'),
+};
+const optionalImageFields = Object.fromEntries(Object.entries(imageFields).map(([k, v]) => [k, v.optional()]));
+const imageSourceFields = {
+  svg: z.string().optional().describe('SVG markup you write (<svg viewBox="0 0 W H" ...>...</svg>)'),
+  name: z.string().optional().describe('Short label shown in the editor list, e.g. "item 2 - exports"'),
+  preview: z.boolean().optional().describe('Also return the rendered frame (at preview_time_sec, default ~0.6 s after the start)'),
+  preview_time_sec: z.number().min(0).optional(),
+  path: z.string().optional().describe('Absolute path of an image file (png, jpg, webp, gif, svg, avif)'),
+  url: z.string().optional().describe('http(s) URL of an image, or a data:image/...;base64 URL'),
+  asset_id: z.string().optional().describe('A picture already in the project (get_project image_assets)'),
+};
+
+// add/update an image; with preview, answer with the rendered frame too
+async function imageCall(method, args) {
+  const { preview, preview_time_sec, ...params } = args;
+  const result = await callEditor(method, await resolveImageSource(params));
+  if (!preview) return asText(result);
+  const t = preview_time_sec ?? Math.min(result.end_sec, result.start_sec + 0.6);
+  const frame = await callEditor('get_frame', { time_sec: t, rendered: true });
+  return asImage({ ...frame, image_overlay: result }, `Image ${result.id} at ${frame.time_sec}s`);
+}
+
+server.registerTool('add_image', {
+  title: 'Add image',
+  description: `Places a picture on the video and returns it with its id. ${IMAGE_HELP} Verify with get_frame.`,
+  inputSchema: { ...imageSourceFields, ...optionalImageFields, start_sec: imageFields.start_sec, end_sec: imageFields.end_sec },
+}, (args) => run(() => imageCall('add_image', args)));
+
+server.registerTool('update_image', {
+  title: 'Update image',
+  description: `Changes any field of an image by id; pass path / url / asset_id to swap the picture. ${IMAGE_HELP}`,
+  inputSchema: {
+    id: z.string(), ...imageSourceFields, ...optionalImageFields,
+    dx: z.number().min(-2).max(2).optional().describe('overlay: move right (+) / left (-) by this fraction of the frame width'),
+    dy: z.number().min(-2).max(2).optional().describe('overlay: move down (+) / up (-) by this fraction of the frame height'),
+  },
+}, (args) => run(() => imageCall('update_image', args)));
+
+server.registerTool('remove_image', {
+  title: 'Remove image',
+  description: 'Deletes an image from the video by id. Undoable.',
+  inputSchema: { id: z.string() },
+  annotations: { destructiveHint: true },
+}, (args) => run(async () => asText(await callEditor('remove_image', args))));
 
 const SEGMENT_HELP =
   'Segments are in SOURCE time (the recording, as get_project/get_frame use it). speed 0 removes the stretch; ' +
@@ -831,6 +993,20 @@ server.registerTool('transcribe', {
     next: 'Proofread every cue (names, numbers, punctuation) and fix them with update_subtitles; then check 2–3 rendered frames.',
   });
 }));
+
+server.registerTool('get_transcript', {
+  title: 'Get spoken words with times',
+  description:
+    'Every word of the subtitle track with its start/end time (source seconds), plus the cues. Use it to time ' +
+    'images / texts to the moment something is said (e.g. one card per item of a spoken list, appearing as each ' +
+    'item is named). Run transcribe first if there are no subtitles; if the user does not want subtitles on ' +
+    'screen, hide them afterwards with set_subtitle_style enabled=false (the words stay available).',
+  inputSchema: {
+    from_sec: z.number().min(0).optional(),
+    to_sec: z.number().min(0).optional(),
+  },
+  annotations: { readOnlyHint: true },
+}, (args) => run(async () => asText(await callEditor('get_transcript', args))));
 
 server.registerTool('get_audio', {
   title: 'Listen to the audio',

@@ -389,6 +389,7 @@ function setOutputFormat(aspect, mode) {
   const from = cameraOptions.aspect || 'source';
   if (aspect !== undefined && aspect !== from) {
     swapTextLayouts(from, aspect);
+    swapImageLayouts(from, aspect);
     const modes = cameraOptions.formatModes = cameraOptions.formatModes || {};
     modes[from] = Object.fromEntries(FORMAT_CAMERA.map(k => [k, cameraOptions[k]]));
     if (modes[aspect]) Object.assign(cameraOptions, modes[aspect]);
@@ -610,6 +611,7 @@ function renderFrame(timeSec, { raw = false, source = sourceVideo, guides = fals
   ctx.restore();
 
   if (!raw) {
+    drawImages(ctx, timeSec * 1000, view);
     drawOverlays(ctx, timeSec * 1000, view);
     drawSubtitles(ctx, timeSec * 1000, view);
     if (cameraOptions.speedBadge !== false) drawSpeedBadge(ctx, timeSec, view);
@@ -705,6 +707,7 @@ async function loadData() {
   if (data.mcrEditorFresh) {
     chrome.storage.session.remove('mcrEditorFresh');
     await idbPut('project', null);
+    await clearImageAssets().catch(console.error);
   } else {
     const saved = await idbGet('project');
     if (saved) applySnapshot(saved);
@@ -718,7 +721,7 @@ async function loadData() {
 function snapshot() {
   return JSON.parse(JSON.stringify({
     clicks, overlays, cameraOptions, nextOverlayId, segments, nextSegmentId, cursorFx, shots, nextShotId,
-    subtitles, subtitleStyle, nextSubtitleId,
+    subtitles, subtitleStyle, nextSubtitleId, images, nextImageId, nextAssetId,
   }));
 }
 
@@ -736,6 +739,10 @@ function applySnapshot(snap) {
   subtitles = (snap.subtitles || []).map(normalizeCue);
   subtitleStyle = { ...SUBTITLE_STYLE_DEFAULTS, ...snap.subtitleStyle };
   nextSubtitleId = snap.nextSubtitleId || subtitles.length + 1;
+  images = (snap.images || []).map(normalizeImage);
+  nextImageId = snap.nextImageId || images.length + 1;
+  nextAssetId = Math.max(nextAssetId, snap.nextAssetId || 1);
+  imagesReady();
 }
 
 let saveTimer = null;
@@ -770,6 +777,7 @@ function projectChanged() {
   renderClickMarkers();
   renderTextList();
   renderTextMarkers();
+  renderImageList();
   renderSegmentList();
   renderSegmentMarkers();
   renderCursorPanel();
@@ -868,6 +876,7 @@ function setupVideo(blob) {
     renderClickMarkers();
     renderTextList();
     renderTextMarkers();
+    renderImageList();
     renderSegmentList();
     renderSegmentMarkers();
     renderCursorPanel();
@@ -1397,7 +1406,7 @@ async function openVideoFile(blob, name = '', reloadDelayMs = 0) {
 }
 
 function hasEdits() {
-  return overlays.length || segments.length || shots.length || subtitles.length || undoStack.length;
+  return overlays.length || images.length || segments.length || shots.length || subtitles.length || undoStack.length;
 }
 
 async function pickAndOpen(file) {
@@ -1430,7 +1439,15 @@ document.addEventListener('dragleave', (e) => {
 });
 document.addEventListener('drop', (e) => {
   document.body.classList.remove('dropping');
-  const f = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v)$/i.test(f.name));
+  const files = [...(e.dataTransfer?.files || [])];
+  // Pictures dropped on a loaded clip become image overlays at the playhead
+  const img = editorReady && files.find(f => f.type.startsWith('image/'));
+  if (img) {
+    e.preventDefault();
+    addImageFromFile(img);
+    return;
+  }
+  const f = files.find(f => f.type.startsWith('video/') || /\.(mp4|webm|mov|mkv|m4v)$/i.test(f.name));
   if (!f) return;
   e.preventDefault();
   pickAndOpen(f);
@@ -1443,6 +1460,7 @@ document.addEventListener('DOMContentLoaded', () => loadData()
     setupDefaultSliders();
     setupSidebarTabs();
     setupTextPanel();
+    setupImagesPanel();
     setupSegmentsPanel();
     setupCursorPanel();
     setupSubtitlesPanel();

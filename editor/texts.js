@@ -77,7 +77,7 @@ function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== `panel-${tab}`));
-  previewCanvas.classList.toggle('placing', tab === 'texts' && !!selectedTextId);
+  previewCanvas.classList.toggle('placing', (tab === 'texts' && !!selectedTextId) || (tab === 'images' && !!selectedImageId));
 }
 
 // --- Text panel ---
@@ -318,10 +318,12 @@ function renderTextMarkers() {
   if (!sourceVideo.duration) return;
   const total = sourceVideo.duration * 1000;
 
-  // Overlapping texts go on separate lanes (greedy, max 3) so none is hidden
+  // Texts and images share this track. Overlapping items go on separate
+  // lanes (greedy, max 3) so none is hidden
+  const items = [...overlays, ...images];
   const laneEnds = [];
   const lanes = new Map();
-  for (const o of [...overlays].sort((a, b) => a.start - b.start)) {
+  for (const o of [...items].sort((a, b) => a.start - b.start)) {
     let lane = laneEnds.findIndex(end => end <= o.start);
     if (lane < 0) lane = laneEnds.length < 3 ? laneEnds.length : laneEnds.indexOf(Math.min(...laneEnds));
     laneEnds[lane] = o.end;
@@ -339,6 +341,20 @@ function renderTextMarkers() {
     bar.title = o.text;
     bar.textContent = o.text;
     bar.addEventListener('pointerdown', (e) => startTextBarDrag(e, o));
+    textMarkersEl.appendChild(bar);
+  }
+
+  for (const im of images) {
+    const a = imageAssets.get(im.asset);
+    const bar = document.createElement('div');
+    bar.className = 'text-bar image-bar' + (im.id === selectedImageId ? ' active' : '') + (laneCount > 1 ? ' compact' : '');
+    bar.style.left = (im.start / total) * 100 + '%';
+    bar.style.width = Math.max(0.4, ((im.end - im.start) / total) * 100) + '%';
+    bar.style.top = (lanes.get(im.id) / laneCount) * 100 + '%';
+    bar.style.height = `calc(${100 / laneCount}% - 1px)`;
+    bar.title = a ? a.name || 'Image' : 'Image';
+    bar.textContent = '🖼 ' + bar.title;
+    bar.addEventListener('pointerdown', (e) => startImageBarDrag(e, im));
     textMarkersEl.appendChild(bar);
   }
 }
